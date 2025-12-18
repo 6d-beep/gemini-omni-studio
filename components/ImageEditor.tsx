@@ -1,19 +1,24 @@
+
 import React, { useState, useRef, useEffect } from 'react';
-import { editImageWithPrompt, extractTextFromImage } from '../services/geminiService';
+import { editImageWithPrompt, generateImage, extractTextFromImage } from '../services/geminiService';
 import { 
   ImagePlus, Wand2, Loader2, Download, ArrowRight, Undo, Redo, 
   History, Sparkles, Archive, Settings2, Layers, Plus, Trash, 
   Save, FileUp, Play, CheckCircle2, AlertOctagon, LayoutGrid, X, Image as ImageIcon,
-  FileText, Clock, RefreshCw, ChevronRight, Eye, Copy, Printer
+  FileText, Clock, RefreshCw, Eye, Copy, Printer, Bookmark, BookmarkPlus,
+  Monitor, Smartphone, Maximize2, Settings, Edit3
 } from 'lucide-react';
 
-const EXAMPLE_PROMPTS = [
+const DEFAULT_EXAMPLE_PROMPTS = [
+  "Style: Cute paper cut soft and miniature diorama",
+  "Style: Cute paper quilling soft and miniature diorama",
+  "Style: Cute toys 3D and miniature diorama",
+  "Style: Cute handcrafted knitted world and miniature diorama",
+  "Buat gambar seperti buku mewarnai dan berbingkai",
   "Ubah menjadi lukisan cat air",
   "Tambahkan cahaya neon cyberpunk futuristik",
   "Ubah latar belakang menjadi malam berbintang",
   "Buat terlihat seperti sketsa pensil",
-  "Tambahkan topi lucu ke subjek",
-  "Ubah musim menjadi musim dingin bersalju",
   "Ubah menjadi gaya seni piksel",
   "Buat terlihat seperti foto vintage"
 ];
@@ -22,8 +27,11 @@ const EXAMPLE_PROMPTS = [
 declare const JSZip: any;
 
 const HISTORY_STORAGE_KEY = 'gemini_img_edit_history_v1';
+const PRESETS_STORAGE_KEY = 'gemini_edit_presets_v1';
+const QUICK_PROMPTS_KEY = 'gemini_quick_prompts_v1';
 
 type QualityLevel = 'low' | 'medium' | 'high';
+type EditorMode = 'edit' | 'generate' | 'batch';
 
 interface BatchItem {
   id: string;
@@ -44,7 +52,16 @@ interface Preset {
 
 const ImageEditor: React.FC = () => {
   // Mode State
-  const [mode, setMode] = useState<'single' | 'batch'>('single');
+  const [editorMode, setEditorMode] = useState<EditorMode>('edit');
+
+  // Quick Prompts State
+  const [quickPrompts, setQuickPrompts] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(QUICK_PROMPTS_KEY);
+      return saved ? JSON.parse(saved) : DEFAULT_EXAMPLE_PROMPTS;
+    } catch { return DEFAULT_EXAMPLE_PROMPTS; }
+  });
+  const [showPromptEditor, setShowPromptEditor] = useState(false);
 
   // Single Editor State
   const [history, setHistory] = useState<string[]>([]);
@@ -55,6 +72,15 @@ const ImageEditor: React.FC = () => {
   const [quality, setQuality] = useState<QualityLevel>('high');
   const [restoredSession, setRestoredSession] = useState(false);
   
+  // Generation Options
+  const [genConfig, setGenConfig] = useState<{
+    aspectRatio: "1:1" | "3:4" | "4:3" | "9:16" | "16:9",
+    imageSize: "1K" | "2K" | "4K"
+  }>({
+    aspectRatio: "1:1",
+    imageSize: "1K"
+  });
+
   // Single OCR State
   const [ocrResult, setOcrResult] = useState<string>('');
   const [showOcrModal, setShowOcrModal] = useState(false);
@@ -74,7 +100,7 @@ const ImageEditor: React.FC = () => {
   useEffect(() => {
     // Load Presets
     try {
-      const savedPresets = localStorage.getItem('gemini_edit_presets');
+      const savedPresets = localStorage.getItem(PRESETS_STORAGE_KEY);
       if (savedPresets) setPresets(JSON.parse(savedPresets));
     } catch (e) { console.error(e); }
 
@@ -83,97 +109,70 @@ const ImageEditor: React.FC = () => {
       const savedHistory = localStorage.getItem(HISTORY_STORAGE_KEY);
       if (savedHistory) {
         const parsed = JSON.parse(savedHistory);
-        if (parsed && Array.isArray(parsed.history) && parsed.history.length > 0 && typeof parsed.currentStep === 'number') {
+        if (parsed && Array.isArray(parsed.history) && parsed.history.length > 0) {
            setHistory(parsed.history);
            setCurrentStep(parsed.currentStep);
            setRestoredSession(true);
-           // Clear the restored flag after a moment
            setTimeout(() => setRestoredSession(false), 3000);
         }
       }
-    } catch (e) {
-      console.error("Failed to restore session", e);
-    }
+    } catch (e) { console.error(e); }
   }, []);
+
+  // Save quick prompts
+  useEffect(() => {
+    localStorage.setItem(QUICK_PROMPTS_KEY, JSON.stringify(quickPrompts));
+  }, [quickPrompts]);
 
   // Auto-Save History Effect
   useEffect(() => {
     if (history.length === 0) return;
-
     const saveState = () => {
       try {
-        const stateToSave = {
-          history,
-          currentStep,
-          timestamp: Date.now()
-        };
+        const stateToSave = { history, currentStep, timestamp: Date.now() };
         localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(stateToSave));
-      } catch (e) {
-        console.warn("LocalStorage full, attempting to save compact state...");
-        try {
-          // Fallback: Save only original and current state to save space
-          // This prevents losing work even if full undo stack can't be saved
-          const compactHistory = [history[0]]; 
-          
-          // Only add current if it's different from original
-          const currentImg = history[currentStep];
-          if (currentImg && currentImg !== history[0]) {
-             compactHistory.push(currentImg);
-          }
-
-          const compactState = {
-            history: compactHistory,
-            currentStep: compactHistory.length - 1,
-            timestamp: Date.now()
-          };
-          localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(compactState));
-        } catch (innerE) {
-          console.error("Failed to save state even in compact mode. Storage likely full.", innerE);
-        }
-      }
+      } catch (e) { console.warn("Storage full"); }
     };
-
-    // Debounce save to avoid blocking UI with heavy JSON serialization
     const timeoutId = setTimeout(saveState, 1000);
     return () => clearTimeout(timeoutId);
   }, [history, currentStep]);
 
-  // Keyboard Shortcuts for Undo/Redo
+  // Auto-Save Presets Effect
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (mode !== 'single') return;
-      // Ignore if user is typing in an input
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets));
+  }, [presets]);
 
-      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
-        if (e.key.toLowerCase() === 'z') {
-          e.preventDefault();
-          if (e.shiftKey) {
-            // Ctrl+Shift+Z = Redo
-            if (currentStep < history.length - 1) setCurrentStep(prev => prev + 1);
-          } else {
-            // Ctrl+Z = Undo
-            if (currentStep > 0) setCurrentStep(prev => prev - 1);
-          }
-        } else if (e.key.toLowerCase() === 'y') {
-          // Ctrl+Y = Redo
-          e.preventDefault();
-          if (currentStep < history.length - 1) setCurrentStep(prev => prev + 1);
-        }
-      }
-    };
+  const currentImage = currentStep >= 0 ? history[currentStep] : null;
+  const originalImage = history.length > 0 ? history[0] : null;
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [mode, currentStep, history.length]);
-
-  const savePresetsToStorage = (newPresets: Preset[]) => {
-    setPresets(newPresets);
-    localStorage.setItem('gemini_edit_presets', JSON.stringify(newPresets));
+  // --- Preset Handlers ---
+  const saveCurrentAsPreset = () => {
+    const validSteps = editSteps.filter(s => s.trim() !== '');
+    if (validSteps.length === 0) {
+      alert("Masukkan setidaknya satu langkah edit untuk disimpan sebagai preset.");
+      return;
+    }
+    const name = window.prompt("Masukkan nama untuk preset ini:", `Preset ${presets.length + 1}`);
+    if (name) {
+      const newPreset: Preset = {
+        id: Math.random().toString(36).substr(2, 9),
+        name,
+        steps: validSteps
+      };
+      setPresets([...presets, newPreset]);
+    }
   };
 
-  const originalImage = history.length > 0 ? history[0] : null;
-  const currentImage = currentStep >= 0 ? history[currentStep] : null;
+  const loadPreset = (preset: Preset) => {
+    setEditSteps([...preset.steps]);
+  };
+
+  const deletePreset = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm("Hapus preset ini?")) {
+      setPresets(presets.filter(p => p.id !== id));
+    }
+  };
 
   // --- Single Mode Handlers ---
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -185,41 +184,46 @@ const ImageEditor: React.FC = () => {
         setHistory([result]);
         setCurrentStep(0);
         setPrompt('');
-        // We explicitly don't clear local storage here; the useEffect will overwrite it shortly
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const handleClearHistory = () => {
-    if(confirm("Apakah Anda yakin? Ini akan menghapus semua riwayat pengeditan.")) {
-        setHistory([]);
-        setCurrentStep(-1);
-        setPrompt('');
-        localStorage.removeItem(HISTORY_STORAGE_KEY);
-    }
-  };
-
-  const handleEdit = async () => {
-    if (!currentImage || !prompt) return;
+  const handleProcess = async () => {
+    if (!prompt || loading) return;
     setLoading(true);
     try {
-      const parts = currentImage.split(',');
-      const mimeType = parts[0].match(/:(.*?);/)?.[1] || 'image/png';
-      const base64Data = parts[1];
-      const resultBase64 = await editImageWithPrompt(base64Data, prompt, mimeType);
-      const newImage = `data:image/png;base64,${resultBase64}`;
-      const newHistory = history.slice(0, currentStep + 1);
-      newHistory.push(newImage);
-      setHistory(newHistory);
-      setCurrentStep(newHistory.length - 1);
-      setPrompt('');
+      if (editorMode === 'generate') {
+        const resultBase64 = await generateImage(prompt, genConfig);
+        const newImage = `data:image/png;base64,${resultBase64}`;
+        const newHistory = history.slice(0, currentStep + 1);
+        newHistory.push(newImage);
+        setHistory(newHistory);
+        setCurrentStep(newHistory.length - 1);
+        setPrompt('');
+      } else {
+        if (!currentImage) return;
+        const parts = currentImage.split(',');
+        const mimeType = parts[0].match(/:(.*?);/)?.[1] || 'image/png';
+        const base64Data = parts[1];
+        const resultBase64 = await editImageWithPrompt(base64Data, prompt, mimeType);
+        const newImage = `data:image/png;base64,${resultBase64}`;
+        const newHistory = history.slice(0, currentStep + 1);
+        newHistory.push(newImage);
+        setHistory(newHistory);
+        setCurrentStep(newHistory.length - 1);
+        setPrompt('');
+      }
     } catch (error) {
       console.error(error);
-      alert("Gagal mengedit gambar. Coba instruksi yang berbeda.");
+      alert(editorMode === 'generate' ? "Gagal membuat gambar." : "Gagal mengedit gambar.");
     } finally {
       setLoading(false);
     }
+  };
+
+  const handlePrint = () => {
+    window.print();
   };
 
   const handleSingleOCR = async () => {
@@ -230,49 +234,46 @@ const ImageEditor: React.FC = () => {
       const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/png';
       const b64 = parts[1];
       const text = await extractTextFromImage(b64, mime);
-      setOcrResult(text || "Tidak ada teks yang ditemukan pada gambar.");
+      setOcrResult(text || "Tidak ada teks yang ditemukan.");
       setShowOcrModal(true);
     } catch (e) {
-      console.error(e);
-      alert("Gagal mengekstrak teks dari gambar.");
+      alert("Gagal OCR.");
     } finally {
       setOcrLoading(false);
     }
   };
 
-  const handlePrint = () => {
+  const handleSingleDownload = async () => {
     if (!currentImage) return;
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Print Image - Omni Studio</title>
-            <style>
-              body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background-color: #fff; }
-              img { max-width: 100%; max-height: 100vh; object-fit: contain; }
-              @media print { 
-                @page { margin: 0; size: auto; }
-                body { -webkit-print-color-adjust: exact; } 
-              }
-            </style>
-          </head>
-          <body>
-            <img src="${currentImage}" onload="setTimeout(() => { window.print(); window.close(); }, 500)" />
-          </body>
-        </html>
-      `);
-      printWindow.document.close();
+    setProcessingDownload(true);
+    try {
+      const link = document.createElement('a');
+      link.href = currentImage;
+      link.download = `gemini-studio-${Date.now()}.png`;
+      link.click();
+    } finally {
+      setProcessingDownload(false);
     }
   };
 
-  const handleUndo = () => {
-    if (currentStep > 0) setCurrentStep(prev => prev - 1);
-  };
-
-  const handleRedo = () => {
-    if (currentStep < history.length - 1) setCurrentStep(prev => prev + 1);
+  // --- Batch Mode Handlers ---
+  const handleBatchFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files) {
+      Array.from(files).forEach(file => {
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          setBatchItems(prev => [...prev, {
+            id: Math.random().toString(36).substr(2, 9),
+            file,
+            preview: evt.target?.result as string,
+            status: 'pending',
+            currentStep: 0
+          }]);
+        };
+        reader.readAsDataURL(file);
+      });
+    }
   };
 
   const getCompressedImage = (base64Data: string, qLevel: QualityLevel): Promise<{ data: string, ext: string }> => {
@@ -300,237 +301,60 @@ const ImageEditor: React.FC = () => {
     });
   };
 
-  const handleSingleDownload = async () => {
-    if (!currentImage) return;
-    setProcessingDownload(true);
-    try {
-      const { data, ext } = await getCompressedImage(currentImage, quality);
-      const link = document.createElement('a');
-      link.href = data;
-      link.download = `gemini-edit-${currentStep}-${quality}.${ext}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } catch (e) {
-      console.error("Download failed", e);
-      alert("Gagal memproses gambar untuk diunduh.");
-    } finally {
-      setProcessingDownload(false);
-    }
-  };
-
-  const handleDownloadZip = async () => {
-    if (history.length === 0) return;
-    setProcessingDownload(true);
-    try {
-      if (typeof JSZip === 'undefined') {
-        alert("Pustaka Zip sedang dimuat. Silakan coba lagi sebentar lagi.");
-        return;
-      }
-      const zip = new JSZip();
-      await Promise.all(history.map(async (imgData, index) => {
-        const { data, ext } = await getCompressedImage(imgData, quality);
-        const base64Data = data.split(',')[1];
-        const filename = index === 0 ? `original-${quality}.${ext}` : `edit_step_${index}-${quality}.${ext}`;
-        zip.file(filename, base64Data, { base64: true });
-      }));
-      // Explicit cast to Blob
-      const zipBlob = (await zip.generateAsync({ type: 'blob' })) as Blob;
-      const url = URL.createObjectURL(zipBlob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `gemini_edit_history_${quality}.zip`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error("Zip generation failed", error);
-      alert("Gagal membuat berkas zip.");
-    } finally {
-      setProcessingDownload(false);
-    }
-  };
-
-  // --- Batch Mode Handlers ---
-
-  const handleBatchFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files) {
-      Array.from(files).forEach(file => {
-        const reader = new FileReader();
-        reader.onload = (evt) => {
-          setBatchItems(prev => [...prev, {
-            id: Math.random().toString(36).substr(2, 9),
-            file,
-            preview: evt.target?.result as string,
-            status: 'pending',
-            currentStep: 0
-          }]);
-        };
-        reader.readAsDataURL(file);
-      });
-      if (batchInputRef.current) batchInputRef.current.value = '';
-    }
-  };
-
-  const removeBatchItem = (id: string) => {
-    setBatchItems(prev => prev.filter(item => item.id !== id));
-  };
-
-  const addEditStep = () => setEditSteps(prev => [...prev, '']);
-  const removeEditStep = (index: number) => setEditSteps(prev => prev.filter((_, i) => i !== index));
-  const updateEditStep = (index: number, value: string) => {
-    const newSteps = [...editSteps];
-    newSteps[index] = value;
-    setEditSteps(newSteps);
-  };
-
-  const savePreset = () => {
-    const validSteps = editSteps.filter(s => s.trim() !== '');
-    if (validSteps.length === 0) {
-      alert("Tambahkan setidaknya satu langkah edit sebelum menyimpan.");
-      return;
-    }
-    const name = prompt("Masukkan nama untuk preset ini:");
-    if (name) {
-      const existingIndex = presets.findIndex(p => p.name.toLowerCase() === name.toLowerCase());
-      
-      if (existingIndex !== -1) {
-         if (confirm(`Preset "${name}" sudah ada. Apakah Anda ingin menimpanya?`)) {
-            const updatedPresets = [...presets];
-            updatedPresets[existingIndex] = {
-               ...updatedPresets[existingIndex],
-               steps: validSteps
-            };
-            savePresetsToStorage(updatedPresets);
-         }
-      } else {
-          const newPreset: Preset = {
-            id: Date.now().toString(),
-            name,
-            steps: validSteps
-          };
-          savePresetsToStorage([...presets, newPreset]);
-      }
-    }
-  };
-
-  const handleLoadPreset = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const presetId = e.target.value;
-    if (!presetId) return;
+  const startBatchProcess = async () => {
+    if (batchItems.length === 0 || isBatchProcessing) return;
     
-    const preset = presets.find(p => p.id === presetId);
-    if (preset) {
-        setEditSteps([...preset.steps]);
-    }
-    // Reset selection to allow re-selection
-    e.target.value = "";
-  };
-
-  const deletePreset = (e: React.MouseEvent, presetId: string) => {
-    e.stopPropagation(); 
-  };
-
-  const runBatchProcessing = async () => {
     const validSteps = editSteps.filter(s => s.trim() !== '');
-    // Allow processing if either we have steps OR OCR is enabled
-    if ((validSteps.length === 0 && !enableOCR) || batchItems.length === 0) return;
+    if (validSteps.length === 0 && !enableOCR) {
+        alert("Pilih setidaknya satu langkah edit atau aktifkan OCR.");
+        return;
+    }
 
     setIsBatchProcessing(true);
     
-    // Process items sequentially to avoid rate limits
-    for (let i = 0; i < batchItems.length; i++) {
-      const item = batchItems[i];
-      if (item.status === 'completed') continue; // Skip already done
+    const updatedItems = [...batchItems];
+    const totalInternalSteps = validSteps.length + (enableOCR ? 1 : 0);
 
-      setBatchItems(prev => prev.map(p => p.id === item.id ? { ...p, status: 'processing', currentStep: 0, error: undefined, extractedText: undefined } : p));
-
-      try {
-        let currentData = item.preview;
-        let stepCount = 0;
-        
-        // Editing Steps
-        for (let stepIndex = 0; stepIndex < validSteps.length; stepIndex++) {
-           stepCount++;
-           setBatchItems(prev => prev.map(p => p.id === item.id ? { ...p, currentStep: stepCount } : p));
-
-           const stepPrompt = validSteps[stepIndex];
-           
-           // Extract base64
-           const parts = currentData.split(',');
-           const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/png';
-           const b64 = parts[1];
-           
-           const res = await editImageWithPrompt(b64, stepPrompt, mime);
-           currentData = `data:image/png;base64,${res}`;
-        }
-        
-        // OCR Step
-        let textResult = undefined;
-        if (enableOCR) {
-           stepCount++;
-           setBatchItems(prev => prev.map(p => p.id === item.id ? { ...p, currentStep: stepCount } : p));
-           
-           const parts = currentData.split(',');
-           const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/png';
-           const b64 = parts[1];
-           textResult = await extractTextFromImage(b64, mime);
-        }
-        
-        setBatchItems(prev => prev.map(p => p.id === item.id ? { 
-            ...p, 
-            status: 'completed', 
-            result: currentData,
-            extractedText: textResult
-        } : p));
-
-      } catch (err: any) {
-        console.error(err);
-        setBatchItems(prev => prev.map(p => p.id === item.id ? { ...p, status: 'failed', error: err.message || "Gagal" } : p));
-      }
+    for (let i = 0; i < updatedItems.length; i++) {
+       if (updatedItems[i].status === 'completed') continue;
+       
+       updatedItems[i] = Object.assign({}, updatedItems[i], { status: 'processing', currentStep: 0 });
+       setBatchItems([...updatedItems]);
+       
+       try {
+          let currentB64 = updatedItems[i].preview.split(',')[1];
+          let currentMime = updatedItems[i].preview.split(',')[0].match(/:(.*?);/)?.[1] || 'image/png';
+          
+          // Execute Edits
+          for (let sIdx = 0; sIdx < validSteps.length; sIdx++) {
+             updatedItems[i] = Object.assign({}, updatedItems[i], { currentStep: sIdx + 1 });
+             setBatchItems([...updatedItems]);
+             
+             const stepPrompt = validSteps[sIdx];
+             currentB64 = await editImageWithPrompt(currentB64, stepPrompt, currentMime);
+          }
+          
+          let extracted = '';
+          if (enableOCR) {
+             updatedItems[i] = Object.assign({}, updatedItems[i], { currentStep: totalInternalSteps });
+             setBatchItems([...updatedItems]);
+             extracted = await extractTextFromImage(currentB64, currentMime);
+          }
+          
+          updatedItems[i] = Object.assign({}, updatedItems[i], { 
+             status: 'completed', 
+             result: `data:image/png;base64,${currentB64}`,
+             extractedText: extracted,
+             currentStep: totalInternalSteps
+          });
+       } catch (e) {
+          console.error(e);
+          updatedItems[i] = Object.assign({}, updatedItems[i], { status: 'failed', error: 'Gagal diproses' });
+       }
+       setBatchItems([...updatedItems]);
     }
     
     setIsBatchProcessing(false);
-  };
-
-  const downloadBatchResults = async () => {
-    const completed = batchItems.filter(i => i.status === 'completed' && i.result);
-    if (completed.length === 0) return;
-    
-    setProcessingDownload(true);
-    try {
-      const zip = new JSZip();
-      const folder = zip.folder("batch_edits");
-      
-      await Promise.all(completed.map(async (item, idx) => {
-        if (!item.result) return;
-        const { data, ext } = await getCompressedImage(item.result, quality);
-        const base64Data = data.split(',')[1];
-        const name = item.file.name.split('.')[0];
-        folder.file(`${name}_edited.${ext}`, base64Data, { base64: true });
-        
-        if (item.extractedText) {
-             folder.file(`${name}_text.txt`, item.extractedText);
-        }
-      }));
-
-      // Explicit cast to Blob
-      const zipBlob = (await zip.generateAsync({ type: 'blob' })) as Blob;
-      const url = URL.createObjectURL(zipBlob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `gemini_batch_results_${new Date().getTime()}.zip`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      console.error(e);
-      alert("Gagal meng-zip hasil batch.");
-    } finally {
-      setProcessingDownload(false);
-    }
   };
 
   const handleCopyAllText = () => {
@@ -540,257 +364,329 @@ const ImageEditor: React.FC = () => {
       .join('\n\n');
 
     if (!texts) return;
+    navigator.clipboard.writeText(texts).then(() => alert("Teks berhasil disalin!"));
+  };
 
-    navigator.clipboard.writeText(texts).then(() => {
-      alert("Semua hasil teks (OCR) berhasil disalin ke clipboard!");
-    });
+  const downloadBatchZip = async () => {
+    const completed = batchItems.filter(i => i.status === 'completed' && i.result);
+    if (completed.length === 0) return;
+    
+    setProcessingDownload(true);
+    try {
+      const zip = new JSZip();
+      const folder = zip.folder("batch_results");
+      
+      await Promise.all(completed.map(async (item) => {
+        if (!item.result) return;
+        const { data, ext } = await getCompressedImage(item.result, quality);
+        const base64Data = data.split(',')[1];
+        const name = item.file.name.split('.')[0];
+        
+        folder.file(`${name}_edited.${ext}`, base64Data as any, { base64: true });
+        if (item.extractedText) {
+             folder.file(`${name}_ocr_text.txt`, item.extractedText as any);
+        }
+      }));
+
+      // Fixed: Explicitly type the result as Blob to satisfy URL.createObjectURL
+      const zipBlob: Blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `batch_edits_${Date.now()}.zip`; a.click();
+      URL.revokeObjectURL(url);
+      setProcessingDownload(false);
+    } catch (e) {
+      console.error(e);
+      alert("Gagal membuat ZIP.");
+    } finally {
+      setProcessingDownload(false);
+    }
+  };
+
+  const handleUpdateQuickPrompt = (index: number, value: string) => {
+    const newPrompts = [...quickPrompts];
+    newPrompts[index] = value;
+    setQuickPrompts(newPrompts);
+  };
+
+  const handleAddQuickPrompt = () => {
+    setQuickPrompts(['New cool prompt...', ...quickPrompts]);
+  };
+
+  const handleDeleteQuickPrompt = (index: number) => {
+    setQuickPrompts(quickPrompts.filter((_, i) => i !== index));
   };
 
   return (
-    <div className="h-full flex flex-col overflow-hidden relative">
-      {/* Header / Mode Switch */}
-      <div className="flex-shrink-0 bg-gray-900 border-b border-gray-800 p-4">
-        <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
-           <div>
-             <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-               <Wand2 className="text-green-400" />
-               Editor Ajaib
+    <div className="h-full flex flex-col bg-gray-950 overflow-hidden">
+      {/* Hidden Print Container */}
+      <div className="hidden print:block print:fixed print:inset-0 print:bg-white print:z-[9999]">
+         {currentImage && <img src={currentImage} className="w-full h-auto object-contain" alt="Print" />}
+      </div>
+
+      {/* Header Mode Switch */}
+      <div className="shrink-0 bg-gray-900 border-b border-gray-800 p-4 sticky top-0 z-20">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+           <div className="text-center sm:text-left">
+             <h2 className="text-xl md:text-2xl font-bold text-white flex items-center justify-center sm:justify-start gap-2">
+               <Wand2 className="text-green-400" size={24} />
+               Gemini Omni-Image
              </h2>
-             <p className="text-gray-400 text-sm flex items-center gap-2">
-               Ubah gambar dengan Gemini 2.5 Flash
-               {restoredSession && (
-                 <span className="text-xs text-green-400 bg-green-900/30 px-2 py-0.5 rounded-full border border-green-800/50 flex items-center gap-1 animate-pulse">
-                   <RefreshCw size={10} /> Sesi Dipulihkan
-                 </span>
-               )}
+             <p className="text-gray-400 text-xs md:text-sm">
+               Kecerdasan Buatan Gemini 2.5 & 3.0 Pro
+               {restoredSession && <span className="ml-2 text-green-400 animate-pulse text-[10px] uppercase font-bold">Dipulihkan</span>}
              </p>
            </div>
            
-           <div className="flex bg-gray-800 p-1 rounded-lg border border-gray-700">
+           <div className="flex bg-black/40 p-1 rounded-xl border border-gray-700 w-full sm:w-auto">
              <button
-               onClick={() => setMode('single')}
-               className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${
-                 mode === 'single' ? 'bg-green-600 text-white shadow' : 'text-gray-400 hover:text-white'
+               onClick={() => setEditorMode('edit')}
+               className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-xs md:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                 editorMode === 'edit' ? 'bg-green-600 text-white shadow-lg' : 'text-gray-400 hover:text-gray-300'
                }`}
              >
-               <ImageIcon size={16} /> Satu Gambar
+               <Edit3 size={16} /> Edit
              </button>
              <button
-               onClick={() => setMode('batch')}
-               className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${
-                 mode === 'batch' ? 'bg-green-600 text-white shadow' : 'text-gray-400 hover:text-white'
+               onClick={() => setEditorMode('generate')}
+               className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-xs md:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                 editorMode === 'generate' ? 'bg-purple-600 text-white shadow-lg' : 'text-gray-400 hover:text-gray-300'
                }`}
              >
-               <Layers size={16} /> Pemrosesan Batch
+               <Sparkles size={16} /> Generate
+             </button>
+             <button
+               onClick={() => setEditorMode('batch')}
+               className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-xs md:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                 editorMode === 'batch' ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-400 hover:text-gray-300'
+               }`}
+             >
+               <Layers size={16} /> Batch
              </button>
            </div>
         </div>
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto p-4 md:p-6">
-        <div className="max-w-6xl mx-auto h-full">
-          
-          {mode === 'single' ? (
-            /* --- SINGLE MODE UI --- */
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start h-full">
-               {/* Input Column */}
-              <div className="space-y-6">
-                <div 
-                  onClick={() => fileInputRef.current?.click()}
-                  className={`border-2 border-dashed rounded-2xl h-96 flex flex-col items-center justify-center cursor-pointer transition-all relative overflow-hidden group ${
-                    originalImage ? 'border-gray-600 bg-black' : 'border-gray-700 hover:border-green-500 hover:bg-gray-800/50'
-                  }`}
-                >
-                  {originalImage ? (
-                    <img src={originalImage} alt="Original" className="w-full h-full object-contain" />
-                  ) : (
-                    <div className="text-center p-6">
-                      <ImagePlus size={48} className="mx-auto mb-4 text-gray-500 group-hover:text-green-400 transition-colors" />
-                      <p className="text-gray-400 font-medium">Klik untuk unggah gambar</p>
-                      <p className="text-sm text-gray-600 mt-2">Mendukung JPG, PNG, WebP, HEIC</p>
-                    </div>
-                  )}
-                  <input 
-                    type="file" 
-                    ref={fileInputRef} 
-                    onChange={handleFileChange} 
-                    className="hidden" 
-                    accept="image/png, image/jpeg, image/webp, image/heic, image/heif"
-                  />
-                  {originalImage && (
-                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                      <p className="text-white font-semibold">Klik untuk ganti gambar dasar</p>
-                    </div>
-                  )}
-                </div>
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-7xl mx-auto p-4 md:p-6 lg:p-8">
+          {editorMode !== 'batch' ? (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-10">
+              
+              {/* Left Column: Input / Options */}
+              <div className="space-y-4 md:space-y-6">
+                {editorMode === 'edit' ? (
+                  <div 
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`border-2 border-dashed rounded-2xl h-64 md:h-96 flex flex-col items-center justify-center cursor-pointer transition-all relative overflow-hidden group ${
+                      originalImage ? 'border-gray-700 bg-black' : 'border-gray-800 hover:border-green-500 hover:bg-gray-900/50'
+                    }`}
+                  >
+                    {originalImage ? (
+                      <img src={originalImage} alt="Input" className="w-full h-full object-contain" />
+                    ) : (
+                      <div className="text-center p-6">
+                        <div className="w-16 h-16 bg-gray-900 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
+                          <ImagePlus size={32} className="text-gray-500 group-hover:text-green-400" />
+                        </div>
+                        <p className="text-gray-400 font-bold text-sm">Unggah Gambar untuk Edit</p>
+                        <p className="text-xs text-gray-600 mt-1">Mendukung JPG, PNG, WebP</p>
+                      </div>
+                    )}
+                    <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*" />
+                  </div>
+                ) : (
+                  <div className="bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl space-y-6">
+                    <h3 className="text-sm font-black text-white flex items-center gap-2 uppercase tracking-widest border-b border-gray-800 pb-3">
+                      <Settings size={18} className="text-purple-400" /> Generation Options
+                    </h3>
+                    
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-[10px] uppercase font-black text-gray-500 tracking-widest mb-3">Aspect Ratio</label>
+                        <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                          {(["1:1", "3:4", "4:3", "9:16", "16:9"] as const).map(ratio => (
+                            <button
+                              key={ratio}
+                              onClick={() => setGenConfig(prev => ({ ...prev, aspectRatio: ratio }))}
+                              className={`py-2 px-1 text-[10px] font-bold rounded-lg border transition-all ${
+                                genConfig.aspectRatio === ratio ? 'bg-purple-600 border-purple-500 text-white' : 'bg-black border-gray-800 text-gray-500 hover:border-gray-600'
+                              }`}
+                            >
+                              {ratio}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
 
-                <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
-                  <label className="block text-sm text-gray-400 mb-2">Instruksi Edit</label>
-                  <div className="flex gap-2">
-                    <input 
-                      type="text" 
-                      value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleEdit()}
-                      placeholder="contoh, 'Tambahkan filter retro', 'Ubah kucing jadi harimau'"
-                      className="flex-1 bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-green-500 outline-none"
-                    />
-                    <button 
-                      onClick={handleEdit}
-                      disabled={!currentImage || !prompt || loading}
-                      className="bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white px-6 rounded-lg font-medium transition-colors flex items-center gap-2"
-                    >
-                      {loading ? <Loader2 className="animate-spin" /> : <Wand2 size={20} />}
-                    </button>
+                      <div>
+                        <label className="block text-[10px] uppercase font-black text-gray-500 tracking-widest mb-3">Image Size (Resolution)</label>
+                        <div className="grid grid-cols-3 gap-3">
+                          {(["1K", "2K", "4K"] as const).map(size => (
+                            <button
+                              key={size}
+                              onClick={() => setGenConfig(prev => ({ ...prev, imageSize: size }))}
+                              className={`py-3 px-2 text-xs font-black rounded-xl border transition-all flex flex-col items-center gap-1 ${
+                                genConfig.imageSize === size ? 'bg-purple-600 border-purple-500 text-white shadow-lg' : 'bg-black border-gray-800 text-gray-500 hover:border-gray-600'
+                              }`}
+                            >
+                              <Maximize2 size={16} />
+                              {size}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-gray-900/50 p-4 md:p-5 rounded-2xl border border-gray-800 shadow-xl space-y-4">
+                  <div>
+                    <label className="block text-[10px] uppercase font-black text-gray-500 tracking-widest mb-3">
+                      {editorMode === 'generate' ? 'Generation Prompt' : 'Instruksi Pengeditan'}
+                    </label>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <textarea 
+                        value={prompt}
+                        onChange={(e) => setPrompt(e.target.value)}
+                        placeholder={editorMode === 'generate' ? "Jelaskan gambar yang ingin dibuat..." : "e.g. Tambahkan kacamata hitam..."}
+                        className="flex-1 bg-black border border-gray-700 rounded-xl px-4 py-3 text-white text-sm focus:ring-2 focus:ring-green-500 outline-none resize-none h-20"
+                      />
+                      <button 
+                        onClick={handleProcess}
+                        disabled={loading || !prompt || (editorMode === 'edit' && !currentImage)}
+                        className={`px-6 py-3 rounded-xl font-black uppercase tracking-widest transition-all flex flex-col items-center justify-center gap-1 shadow-lg disabled:opacity-30 ${
+                          editorMode === 'generate' ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/20' : 'bg-green-600 hover:bg-green-500 shadow-green-900/20'
+                        }`}
+                      >
+                        {loading ? <Loader2 className="animate-spin" size={24} /> : (
+                          <>
+                            {editorMode === 'generate' ? <Sparkles size={24} /> : <Wand2 size={24} />}
+                            <span className="text-[10px]">{editorMode === 'generate' ? 'Create' : 'Edit'}</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
 
-                  {/* Example Prompts */}
-                  <div className="mt-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Sparkles size={12} className="text-yellow-400" />
-                      <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Coba contoh ini:</p>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                       <p className="text-[10px] text-gray-600 font-bold uppercase tracking-tighter">Cepat Pilih / Presets:</p>
+                       <button 
+                        onClick={() => setShowPromptEditor(!showPromptEditor)}
+                        className="p-1 text-gray-500 hover:text-white transition-colors"
+                        title="Edit Quick Prompts"
+                       >
+                         {showPromptEditor ? <X size={14}/> : <Settings2 size={14}/>}
+                       </button>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      {EXAMPLE_PROMPTS.map((ex, i) => (
-                        <button 
-                          key={i}
-                          onClick={() => setPrompt(ex)}
-                          className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 border border-gray-600 hover:border-gray-500 rounded-lg text-xs text-gray-300 transition-colors"
-                        >
-                          {ex}
+
+                    {showPromptEditor ? (
+                      <div className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar pr-2">
+                        {quickPrompts.map((p, i) => (
+                          <div key={i} className="flex gap-2 group/item">
+                            <input 
+                              type="text" 
+                              value={p} 
+                              onChange={(e) => handleUpdateQuickPrompt(i, e.target.value)}
+                              className="flex-1 bg-black border border-gray-800 rounded-lg p-2 text-[11px] text-gray-300 focus:ring-1 focus:ring-green-500"
+                            />
+                            <button onClick={() => handleDeleteQuickPrompt(i)} className="p-1.5 text-gray-600 hover:text-red-400"><Trash size={14}/></button>
+                          </div>
+                        ))}
+                        <button onClick={handleAddQuickPrompt} className="w-full py-2 border border-dashed border-gray-800 rounded-lg text-[10px] font-bold text-gray-500 hover:text-white hover:border-gray-600 flex items-center justify-center gap-1">
+                          <Plus size={12}/> Tambah Baru
                         </button>
-                      ))}
-                    </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {quickPrompts.map((ex, i) => (
+                          <button 
+                            key={i} onClick={() => setPrompt(ex)}
+                            className="px-3 py-1.5 bg-gray-800/50 hover:bg-gray-700 border border-gray-700 rounded-lg text-[11px] text-gray-400 hover:text-white transition-colors"
+                          >
+                            {ex}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
 
-              {/* Output Column */}
-              <div className="space-y-6">
-                {/* Toolbar */}
-                <div className="flex items-center justify-between bg-gray-800 p-3 rounded-xl border border-gray-700">
-                    <div className="flex items-center gap-2">
-                      <History size={18} className="text-gray-400" />
-                      <span className="text-sm text-gray-300 font-medium">
-                          Riwayat Edit ({currentStep + 1}/{history.length})
-                      </span>
+              {/* Right Column: Output */}
+              <div className="space-y-4 md:space-y-6">
+                <div className="flex flex-wrap items-center justify-between bg-gray-900/80 p-3 rounded-2xl border border-gray-800 gap-3 shadow-lg">
+                    <div className="flex items-center gap-2 px-2">
+                      <History size={16} className="text-blue-400" />
+                      <span className="text-xs text-gray-300 font-bold uppercase tracking-tight">Riwayat ({currentStep + 1}/{history.length})</span>
                     </div>
-                    <div className="flex gap-2 items-center">
-                      <button
-                        onClick={handleClearHistory}
-                        disabled={history.length === 0}
-                        className="p-2 hover:bg-gray-700 rounded-lg text-gray-300 disabled:opacity-30 disabled:hover:bg-transparent transition-colors hover:text-red-400"
-                        title="Hapus Riwayat"
-                      >
-                         <Trash size={20} />
-                      </button>
-                      <div className="w-px h-6 bg-gray-600 mx-1"></div>
-                      <button
-                        onClick={handleDownloadZip}
-                        disabled={history.length === 0 || processingDownload}
-                        className="p-2 hover:bg-gray-700 rounded-lg text-gray-300 disabled:opacity-30 disabled:hover:bg-transparent transition-colors flex items-center gap-1"
-                        title="Unduh Semua Riwayat (ZIP)"
-                      >
-                        {processingDownload ? <Loader2 size={20} className="animate-spin" /> : <Archive size={20} />}
-                      </button>
-                      <div className="w-px h-6 bg-gray-600 mx-1"></div>
-                      <button
-                        onClick={handleUndo}
-                        disabled={currentStep <= 0}
-                        className="p-2 hover:bg-gray-700 rounded-lg text-gray-300 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-                        title="Urung (Ctrl+Z)"
-                      >
-                        <Undo size={20} />
-                      </button>
-                      <button
-                        onClick={handleRedo}
-                        disabled={currentStep >= history.length - 1}
-                        className="p-2 hover:bg-gray-700 rounded-lg text-gray-300 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-                        title="Ulang (Ctrl+Y)"
-                      >
-                        <Redo size={20} />
-                      </button>
+                    <div className="flex gap-1.5 items-center ml-auto">
+                      <button onClick={() => setCurrentStep(Math.max(0, currentStep - 1))} disabled={currentStep <= 0} className="p-2 hover:bg-gray-800 text-gray-400 hover:text-white disabled:opacity-20 transition-all rounded-lg" title="Undo"><Undo size={18} /></button>
+                      <button onClick={() => setCurrentStep(Math.min(history.length - 1, currentStep + 1))} disabled={currentStep >= history.length - 1} className="p-2 hover:bg-gray-800 text-gray-400 hover:text-white disabled:opacity-20 transition-all rounded-lg" title="Redo"><Redo size={18} /></button>
+                      <div className="w-px h-4 bg-gray-700 mx-1"></div>
+                      <button onClick={() => { setHistory([]); setCurrentStep(-1); }} className="p-2 hover:bg-red-900/30 text-gray-500 hover:text-red-400 transition-all rounded-lg" title="Bersihkan"><Trash size={18}/></button>
                     </div>
                 </div>
 
-                <div className={`border-2 border-gray-800 rounded-2xl h-96 flex flex-col items-center justify-center bg-black relative`}>
+                <div className="border-2 border-gray-900 rounded-2xl h-64 md:h-96 flex items-center justify-center bg-black relative shadow-2xl overflow-hidden group">
                     {currentImage ? (
                       <div className="relative w-full h-full">
-                          <img src={currentImage} alt="Versi Saat Ini" className={`w-full h-full object-contain ${loading ? 'opacity-50 blur-sm' : ''}`} />
+                          <img src={currentImage} alt="Preview" className={`w-full h-full object-contain ${loading ? 'opacity-30 blur-md' : ''}`} />
                           {loading && (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center">
-                              <Loader2 size={48} className="animate-spin text-green-500 mb-4" />
-                              <p className="text-white font-medium animate-pulse">Memproses...</p>
+                            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm">
+                              <div className={`w-16 h-16 border-4 rounded-full animate-spin mb-4 ${editorMode === 'generate' ? 'border-purple-500/30 border-t-purple-500' : 'border-green-500/30 border-t-green-500'}`}></div>
+                              <p className={`text-xs font-black uppercase tracking-widest animate-pulse ${editorMode === 'generate' ? 'text-purple-400' : 'text-green-400'}`}>
+                                {editorMode === 'generate' ? 'Menciptakan Mahakarya...' : 'Memproses Perubahan...'}
+                              </p>
                             </div>
                           )}
+                          <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col gap-2">
+                             <button onClick={handlePrint} className="bg-black/60 hover:bg-black p-2 rounded-full text-white backdrop-blur-md border border-white/10 shadow-xl" title="Cetak"><Printer size={18}/></button>
+                             <button onClick={handleSingleOCR} className="bg-black/60 hover:bg-black p-2 rounded-full text-white backdrop-blur-md border border-white/10 shadow-xl" title="Ekstrak Teks"><FileText size={18}/></button>
+                             <button 
+                              onClick={() => { setQuickPrompts([prompt || "My Saved Prompt", ...quickPrompts]); alert("Tersimpan ke Quick Prompts!"); }}
+                              className="bg-black/60 hover:bg-black p-2 rounded-full text-white backdrop-blur-md border border-white/10 shadow-xl"
+                              title="Simpan Prompt ke Quick Prompts"
+                             >
+                               <BookmarkPlus size={18} />
+                             </button>
+                          </div>
                       </div>
                     ) : (
-                      <div className="text-center p-6 text-gray-600">
-                        <div className="flex flex-col items-center">
-                            <ArrowRight size={48} className="mb-4 opacity-20" />
-                            <p>Gambar yang diunggah akan muncul di sini.</p>
-                        </div>
+                      <div className="text-center p-10">
+                        <ArrowRight size={40} className="text-gray-700 mx-auto mb-3" />
+                        <p className="text-gray-700 text-sm font-bold uppercase">Hasil akan muncul di sini</p>
                       </div>
                     )}
                 </div>
                 
                 {currentImage && (
-                  <div className="bg-gray-800 p-3 rounded-xl border border-gray-700 space-y-3">
-                      <div className="flex flex-wrap items-center justify-between text-sm gap-2">
-                        <div className="flex items-center gap-2">
-                          <Settings2 size={16} className="text-gray-400" />
-                          <span className="text-gray-300 font-medium">Kualitas Unduhan:</span>
-                        </div>
-                        <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-600">
-                            {(['low', 'medium', 'high'] as const).map((q) => (
-                              <button
-                                key={q}
-                                onClick={() => setQuality(q)}
-                                className={`px-3 py-1 rounded-md text-xs font-bold capitalize transition-all ${
-                                    quality === q ? 'bg-green-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'
-                                }`}
-                              >
-                                {q}
-                              </button>
-                            ))}
-                        </div>
-                      </div>
-                      
-                      <button 
-                        onClick={handleSingleOCR}
-                        disabled={processingDownload || ocrLoading}
-                        className="block w-full bg-blue-600 hover:bg-blue-500 text-center py-3 rounded-xl border border-blue-500 hover:border-blue-400 text-white transition-all flex items-center justify-center gap-2 font-medium"
-                      >
-                        {ocrLoading ? <Loader2 size={20} className="animate-spin" /> : <FileText size={20} />}
-                        Ekstrak Teks (OCR)
-                      </button>
-
-                      <button 
-                        onClick={handlePrint}
-                        disabled={processingDownload}
-                        className="block w-full bg-purple-600 hover:bg-purple-500 text-center py-3 rounded-xl border border-purple-500 hover:border-purple-400 text-white transition-all flex items-center justify-center gap-2 font-medium"
-                      >
-                        <Printer size={20} />
-                        Cetak Gambar
-                      </button>
-
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <button 
                         onClick={handleSingleDownload}
                         disabled={processingDownload}
-                        className="block w-full bg-gray-700 hover:bg-gray-600 text-center py-3 rounded-xl border border-gray-600 hover:border-gray-500 text-white transition-all flex items-center justify-center gap-2 font-medium"
+                        className="bg-gray-800 hover:bg-gray-700 text-white py-3.5 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 border border-gray-700 shadow-lg"
                       >
-                        {processingDownload ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} />}
-                        Unduh ({quality.charAt(0).toUpperCase() + quality.slice(1)})
+                        {processingDownload ? <Loader2 className="animate-spin" size={18} /> : <Download size={18} />} Unduh Gambar
                       </button>
-
                       <button 
-                        onClick={handleDownloadZip}
-                        disabled={history.length === 0 || processingDownload}
-                        className="block w-full bg-gray-800 hover:bg-gray-700 text-center py-3 rounded-xl border border-gray-600 hover:border-gray-500 text-gray-300 transition-all flex items-center justify-center gap-2 font-medium"
+                        onClick={async () => {
+                           setProcessingDownload(true);
+                           const zip = new JSZip();
+                           history.forEach((img, i) => zip.file(`step-${i}.png`, img.split(',')[1], {base64: true}));
+                           // Explicitly type the result as Blob to satisfy URL.createObjectURL
+                           const blob: Blob = await zip.generateAsync({type:"blob"});
+                           const url = URL.createObjectURL(blob); 
+                           const a = document.createElement('a');
+                           a.href = url; a.download = "gemini_studio_history.zip"; a.click();
+                           URL.revokeObjectURL(url);
+                           setProcessingDownload(false);
+                        }}
+                        disabled={processingDownload}
+                        className="bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/30 py-3.5 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2"
                       >
-                        {processingDownload ? <Loader2 size={20} className="animate-spin" /> : <Archive size={20} />}
-                        Unduh Riwayat (ZIP)
+                        {processingDownload ? <Loader2 className="animate-spin" size={18} /> : <Archive size={18} />} ZIP Riwayat
                       </button>
                   </div>
                 )}
@@ -798,343 +694,196 @@ const ImageEditor: React.FC = () => {
             </div>
           ) : (
             /* --- BATCH MODE UI --- */
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               
-              {/* Left Panel: Configuration */}
               <div className="lg:col-span-4 space-y-6">
-                 
-                 {/* 1. Upload Section */}
-                 <div className="bg-gray-800 rounded-xl border border-gray-700 p-4">
-                    <h3 className="font-bold text-white mb-3 flex items-center gap-2">
-                      <FileUp size={18} className="text-blue-400" /> 1. Unggah Gambar
+                 <div className="bg-gray-900 p-5 rounded-2xl border border-gray-800 shadow-xl">
+                    <h3 className="text-sm font-black text-white mb-4 flex items-center gap-2 uppercase tracking-widest">
+                      <FileUp size={16} className="text-blue-400" /> 1. Pilih Gambar
                     </h3>
                     <div 
                       onClick={() => batchInputRef.current?.click()}
-                      className="border-2 border-dashed border-gray-600 hover:border-blue-500 hover:bg-gray-700/50 rounded-xl p-6 text-center cursor-pointer transition-colors"
+                      className="border-2 border-dashed border-gray-800 hover:border-blue-500/50 hover:bg-blue-500/5 rounded-2xl p-8 text-center cursor-pointer transition-all group"
                     >
-                      <ImagePlus size={32} className="mx-auto mb-2 text-gray-500" />
-                      <p className="text-sm text-gray-300">Klik untuk memilih banyak gambar</p>
-                      <input 
-                        type="file" 
-                        ref={batchInputRef} 
-                        onChange={handleBatchFileChange} 
-                        multiple 
-                        className="hidden" 
-                        accept="image/png, image/jpeg, image/webp, image/heic, image/heif"
-                      />
+                      <ImagePlus size={32} className="text-gray-700 group-hover:text-blue-400 mx-auto mb-3" />
+                      <p className="text-xs text-gray-500 font-bold uppercase tracking-tighter">Klik untuk tambah file</p>
+                      <input type="file" ref={batchInputRef} onChange={handleBatchFileChange} multiple className="hidden" accept="image/*" />
                     </div>
                     {batchItems.length > 0 && (
-                      <div className="mt-4 flex items-center justify-between text-sm text-gray-400 bg-gray-900 p-2 rounded-lg">
-                         <span>{batchItems.length} gambar dipilih</span>
-                         <button onClick={() => setBatchItems([])} className="text-red-400 hover:text-red-300">Hapus Semua</button>
+                      <div className="mt-4 flex items-center justify-between text-[10px] font-black text-gray-500 bg-black/40 p-3 rounded-xl border border-gray-800">
+                         <span>{batchItems.length} GAMBAR TERPILIH</span>
+                         <button onClick={() => setBatchItems([])} className="text-red-500 hover:text-red-400">HAPUS SEMUA</button>
                       </div>
                     )}
                  </div>
 
-                 {/* 2. Sequence Editor */}
-                 <div className="bg-gray-800 rounded-xl border border-gray-700 p-4 flex flex-col gap-4">
-                    <div className="flex items-center justify-between">
-                       <h3 className="font-bold text-white flex items-center gap-2">
-                         <Layers size={18} className="text-purple-400" /> 2. Urutan Edit
-                       </h3>
-                       {/* Preset Controls */}
-                       <div className="flex gap-2 items-center">
-                          <select 
-                            onChange={handleLoadPreset}
-                            className="bg-gray-900 text-white text-xs rounded border border-gray-600 outline-none py-1.5 pl-2 pr-8 w-32 cursor-pointer hover:border-gray-500 transition-colors appearance-none"
-                            defaultValue=""
-                            style={{ backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`, backgroundPosition: `right 0.5rem center`, backgroundRepeat: `no-repeat`, backgroundSize: `1.5em 1.5em` }}
-                          >
-                             <option value="" disabled>Muat Preset...</option>
-                             {presets.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                          </select>
-                          <button 
-                            onClick={savePreset} 
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/50 hover:border-blue-500 rounded text-xs text-blue-200 hover:text-white transition-colors font-medium" 
-                            title="Simpan urutan saat ini sebagai preset"
-                          >
-                            <Save size={14}/> Simpan
-                          </button>
-                       </div>
+                 <div className="bg-gray-900 p-5 rounded-2xl border border-gray-800 shadow-xl">
+                    <div className="flex justify-between items-center mb-4">
+                      <h3 className="text-sm font-black text-white flex items-center gap-2 uppercase tracking-widest">
+                        <Layers size={16} className="text-purple-400" /> 2. Urutan Edit
+                      </h3>
+                      <div className="relative group/presets">
+                        <button className="p-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-400 transition-all">
+                          <Bookmark size={16} />
+                        </button>
+                        <div className="absolute right-0 top-full mt-2 w-48 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl opacity-0 group-hover/presets:opacity-100 invisible group-hover/presets:visible transition-all z-50">
+                           <div className="p-3 border-b border-gray-700 text-[10px] font-black uppercase text-gray-500 tracking-widest flex justify-between items-center">
+                              Presets
+                              <button onClick={saveCurrentAsPreset} className="text-blue-400 hover:text-blue-300"><Plus size={14}/></button>
+                           </div>
+                           <div className="max-h-48 overflow-y-auto custom-scrollbar">
+                              {presets.length === 0 ? (
+                                <div className="p-4 text-center text-xs text-gray-600">Belum ada preset</div>
+                              ) : (
+                                presets.map(p => (
+                                  <div 
+                                    key={p.id} 
+                                    onClick={() => loadPreset(p)}
+                                    className="p-3 hover:bg-gray-700 cursor-pointer flex justify-between items-center group/item"
+                                  >
+                                    <span className="text-xs text-gray-300 font-bold truncate pr-2">{p.name}</span>
+                                    <button onClick={(e) => deletePreset(p.id, e)} className="text-gray-600 hover:text-red-400 opacity-0 group-hover/item:opacity-100 transition-opacity">
+                                      <Trash size={12} />
+                                    </button>
+                                  </div>
+                                ))
+                              )}
+                           </div>
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1 custom-scrollbar">
+                    <div className="space-y-2 mb-4 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
                        {editSteps.map((step, idx) => (
                          <div key={idx} className="flex gap-2">
-                            <span className="text-xs font-bold text-gray-500 pt-3 w-4">{idx+1}.</span>
-                            <div className="flex-1">
-                               <input 
-                                 type="text" 
-                                 value={step}
-                                 onChange={(e) => updateEditStep(idx, e.target.value)}
-                                 placeholder={`Instruksi Langkah ${idx+1}...`}
-                                 className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm text-white focus:ring-1 focus:ring-purple-500 outline-none"
-                               />
-                            </div>
-                            {editSteps.length > 1 && (
-                              <button onClick={() => removeEditStep(idx)} className="text-gray-500 hover:text-red-400">
-                                <Trash size={16} />
-                              </button>
-                            )}
+                            <input 
+                              type="text" value={step}
+                              onChange={(e) => {
+                                const s = [...editSteps]; s[idx] = e.target.value; setEditSteps(s);
+                              }}
+                              placeholder={`Langkah ${idx+1}...`}
+                              className="flex-1 bg-black border border-gray-800 rounded-lg p-2 text-xs text-white focus:ring-1 focus:ring-purple-500 outline-none"
+                            />
+                            {editSteps.length > 1 && <button onClick={() => setEditSteps(editSteps.filter((_, i) => i !== idx))} className="text-gray-600 hover:text-red-400"><X size={16}/></button>}
                          </div>
                        ))}
                     </div>
-
-                    <button 
-                      onClick={addEditStep}
-                      className="w-full py-2 border border-dashed border-gray-600 hover:border-gray-500 text-gray-400 text-sm rounded-lg flex items-center justify-center gap-1"
-                    >
-                      <Plus size={14} /> Tambah Langkah
-                    </button>
-
-                    <div className="flex items-center gap-2 pt-2 border-t border-gray-700 mt-2">
-                      <input 
-                        type="checkbox" 
-                        id="enableOCR" 
-                        checked={enableOCR} 
-                        onChange={(e) => setEnableOCR(e.target.checked)}
-                        className="rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500"
-                      />
-                      <label htmlFor="enableOCR" className="text-sm text-gray-300 flex items-center gap-2 cursor-pointer">
-                         <FileText size={14} className="text-yellow-400" />
-                         Ekstrak Teks (OCR) dari Hasil
+                    <button onClick={() => setEditSteps([...editSteps, ''])} className="w-full py-2 border border-dashed border-gray-800 hover:border-gray-700 text-gray-500 text-[10px] font-black uppercase rounded-xl flex items-center justify-center gap-1 transition-colors"><Plus size={14}/> Tambah Langkah</button>
+                    
+                    <div className="flex items-center gap-2 mt-4 pt-4 border-t border-gray-800">
+                      <input type="checkbox" id="ocr_batch" checked={enableOCR} onChange={(e) => setEnableOCR(e.target.checked)} className="rounded border-gray-700 bg-black text-blue-500" />
+                      <label htmlFor="ocr_batch" className="text-xs text-gray-400 font-bold cursor-pointer flex items-center gap-1">
+                        <FileText size={12} className="text-yellow-500" /> Ekstrak Teks (OCR) dari Hasil
                       </label>
                     </div>
                  </div>
 
-                 {/* 3. Actions */}
                  <button
-                   onClick={runBatchProcessing}
+                   onClick={startBatchProcess}
                    disabled={isBatchProcessing || batchItems.length === 0}
-                   className="w-full bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-500 hover:to-teal-500 disabled:opacity-50 text-white py-4 rounded-xl font-bold shadow-lg flex items-center justify-center gap-2"
+                   className="w-full bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-500 hover:to-teal-500 disabled:opacity-30 text-white py-4 rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-green-900/20 flex items-center justify-center gap-2"
                  >
-                   {isBatchProcessing ? <Loader2 className="animate-spin" /> : <Play size={20} />}
-                   {isBatchProcessing ? 'Memproses Batch...' : 'Proses Semua Gambar'}
+                   {isBatchProcessing ? <Loader2 className="animate-spin" /> : <Play size={20} />} Mulai Proses
                  </button>
               </div>
 
-              {/* Right Panel: Grid & Results */}
-              <div className="lg:col-span-8 flex flex-col h-[600px] lg:h-auto bg-gray-800 rounded-xl border border-gray-700 overflow-hidden shadow-2xl">
-                 <div className="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-900/50">
-                    <h3 className="font-bold text-white flex items-center gap-2">
-                       <LayoutGrid size={18} className="text-blue-400" /> Antrean Batch
-                    </h3>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleCopyAllText}
-                        disabled={isBatchProcessing || !batchItems.some(i => i.extractedText)}
-                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
-                        title="Salin semua teks hasil OCR ke Clipboard"
-                      >
-                        <Copy size={16} /> <span className="hidden sm:inline">Salin Teks</span>
-                      </button>
-                      <button
-                        onClick={downloadBatchResults}
-                        disabled={isBatchProcessing || !batchItems.some(i => i.status === 'completed')}
-                        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:bg-gray-700 text-white rounded-lg text-sm font-medium flex items-center gap-2"
-                      >
-                        {processingDownload ? <Loader2 className="animate-spin" size={16} /> : <Archive size={16} />}
-                        <span className="hidden sm:inline">Unduh ZIP</span>
-                      </button>
+              <div className="lg:col-span-8 space-y-4">
+                 <div className="bg-gray-900/50 rounded-2xl border border-gray-800 overflow-hidden shadow-2xl">
+                    <div className="p-4 border-b border-gray-800 flex justify-between items-center bg-black/40">
+                       <h3 className="text-xs font-black text-gray-300 flex items-center gap-2 uppercase tracking-widest"><LayoutGrid size={16} className="text-blue-400" /> Antrean ({batchItems.length})</h3>
+                       <div className="flex gap-2">
+                        <div className="flex items-center gap-2 mr-2 border-r border-gray-700 pr-2">
+                          <span className="text-[10px] font-bold text-gray-500 uppercase">Kualitas:</span>
+                          <select 
+                            value={quality} 
+                            onChange={(e) => setQuality(e.target.value as QualityLevel)}
+                            className="bg-black border border-gray-700 rounded text-[10px] px-1 py-0.5 text-gray-300 outline-none"
+                          >
+                            <option value="high">Tinggi (HQ)</option>
+                            <option value="medium">Sedang</option>
+                            <option value="low">Rendah (Kecil)</option>
+                          </select>
+                        </div>
+                        {batchItems.some(i => i.status === 'completed' && i.extractedText) && (
+                            <button onClick={handleCopyAllText} className="px-4 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1.5">
+                                <Copy size={14} /> Salin Semua Teks
+                            </button>
+                        )}
+                        {batchItems.some(i => i.status === 'completed') && (
+                            <button onClick={downloadBatchZip} disabled={processingDownload} className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-[10px] font-black uppercase transition-all shadow-lg shadow-blue-900/20 flex items-center gap-1.5">
+                                {processingDownload ? <Loader2 className="animate-spin" size={14} /> : <Archive size={14} />} ZIP Hasil
+                            </button>
+                        )}
+                       </div>
                     </div>
-                 </div>
-                 
-                 <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-gray-900/50">
-                    {batchItems.length === 0 ? (
-                      <div className="h-full flex flex-col items-center justify-center text-gray-500 border-2 border-dashed border-gray-700 rounded-xl m-4 bg-gray-800/30">
-                         <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center mb-6 shadow-inner">
-                            <Layers size={40} className="text-gray-600" />
+                    
+                    <div className="p-4 min-h-[400px]">
+                       {batchItems.length === 0 ? (
+                         <div className="h-64 flex flex-col items-center justify-center text-gray-700 text-center">
+                            <ImageIcon size={48} className="opacity-10 mb-2" />
+                            <p className="text-xs font-bold uppercase tracking-widest opacity-20">Antrean Kosong</p>
                          </div>
-                         <h4 className="text-lg font-bold text-gray-300 mb-2">Antrean Batch Kosong</h4>
-                         <p className="max-w-xs text-center text-sm">Unggah gambar dari panel kiri untuk mulai memproses banyak berkas sekaligus.</p>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                         {batchItems.map((item) => {
-                           // Calculate total steps including optional OCR
-                           const validSteps = editSteps.filter(s => s.trim());
-                           const stepsCount = validSteps.length;
-                           const totalSteps = (stepsCount === 0 && !enableOCR) ? 1 : stepsCount + (enableOCR ? 1 : 0);
-                           
-                           // Determine current action text with Step Counting
-                           let currentActionText = "";
-                           if (item.status === 'processing') {
-                               if (item.currentStep <= stepsCount && item.currentStep > 0) {
-                                   currentActionText = `Langkah ${item.currentStep}/${totalSteps}: ${validSteps[item.currentStep - 1]}`;
-                               } else if (enableOCR && item.currentStep > stepsCount) {
-                                   currentActionText = `Langkah ${item.currentStep}/${totalSteps}: Ekstrak Teks (OCR)...`;
-                               }
-                           } else if (item.status === 'completed') {
-                               currentActionText = "Pemrosesan Selesai";
-                           } else if (item.status === 'failed') {
-                               currentActionText = "Operasi Gagal";
-                           } else {
-                               currentActionText = "Menunggu mulai...";
-                           }
-
-                           return (
-                           <div key={item.id} className={`bg-gray-900 rounded-xl border-2 overflow-hidden relative group transition-all duration-300 ${
-                                item.status === 'completed' ? 'border-green-500/50 shadow-[0_0_20px_rgba(34,197,94,0.15)]' :
-                                item.status === 'failed' ? 'border-red-500/50 shadow-[0_0_20px_rgba(239,68,68,0.15)]' :
-                                item.status === 'processing' ? 'border-blue-500/50 shadow-[0_0_20px_rgba(59,130,246,0.15)] scale-[1.02] z-10' :
-                                'border-gray-800 hover:border-gray-700'
-                           }`}>
-                              {/* Remove Button (only pending) */}
-                              {item.status === 'pending' && (
-                                <button 
-                                  onClick={() => removeBatchItem(item.id)}
-                                  className="absolute top-2 left-2 z-30 bg-black/60 hover:bg-red-600/90 p-1.5 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm"
-                                >
-                                  <X size={14} />
-                                </button>
-                              )}
-
-                              {/* Action Buttons (Download / Retry) */}
-                              <div className="absolute bottom-2 right-2 flex gap-2 z-30 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  {item.status === 'completed' && item.result && (
-                                    <button 
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        const link = document.createElement('a');
-                                        link.href = item.result!;
-                                        link.download = `edited_${item.file.name}`;
-                                        document.body.appendChild(link);
-                                        link.click();
-                                        document.body.removeChild(link);
-                                      }}
-                                      className="bg-gray-800/90 hover:bg-blue-600 text-white p-2 rounded-lg backdrop-blur-sm border border-gray-600 shadow-lg"
-                                      title="Unduh Gambar"
-                                    >
-                                      <Download size={16} />
-                                    </button>
-                                  )}
-                                  {item.status === 'failed' && (
-                                     <button 
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setBatchItems(prev => prev.map(p => p.id === item.id ? { ...p, status: 'pending', error: undefined, currentStep: 0 } : p));
-                                      }}
-                                      className="bg-gray-800/90 hover:bg-green-600 text-white p-2 rounded-lg backdrop-blur-sm border border-gray-600 shadow-lg"
-                                      title="Coba Lagi"
-                                    >
-                                      <RefreshCw size={16} />
-                                    </button>
-                                  )}
-                              </div>
-
-                              <div className="aspect-square relative bg-black/20">
-                                 <img 
-                                   src={item.result || item.preview} 
-                                   alt="Pratinjau" 
-                                   className={`w-full h-full object-cover transition-all duration-500 ${item.status === 'processing' ? 'blur-[3px] opacity-60 scale-105' : ''}`} 
-                                 />
-
-                                 {/* Processing Overlay */}
-                                 {item.status === 'processing' && (
-                                     <div className="absolute inset-0 flex flex-col items-center justify-center z-20">
-                                          <div className="relative">
-                                            <div className="w-12 h-12 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin"></div>
-                                            <div className="absolute inset-0 flex items-center justify-center">
-                                                <Wand2 size={16} className="text-blue-400 animate-pulse" />
+                       ) : (
+                         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                            {batchItems.map((item) => {
+                                const validStepsCount = editSteps.filter(s => s.trim()).length;
+                                const totalInternalSteps = validStepsCount + (enableOCR ? 1 : 0);
+                                const progress = item.status === 'completed' ? 100 : (item.currentStep / (totalInternalSteps || 1)) * 100;
+                                
+                                return (
+                                <div key={item.id} className={`bg-black border rounded-xl overflow-hidden group relative transition-all ${item.status === 'completed' ? 'border-green-500/30 shadow-[0_0_15px_rgba(34,197,94,0.1)]' : item.status === 'failed' ? 'border-red-500/30' : 'border-gray-800'}`}>
+                                    <div className="aspect-video bg-gray-900 relative">
+                                        <img src={item.result || item.preview} className={`w-full h-full object-cover transition-opacity duration-300 ${item.status === 'processing' ? 'opacity-30' : 'opacity-80'}`} />
+                                        
+                                        {item.status === 'pending' && <div className="absolute inset-0 flex items-center justify-center"><Clock size={20} className="text-gray-700" /></div>}
+                                        {item.status === 'processing' && (
+                                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                                                <Loader2 size={24} className="text-blue-500 animate-spin" />
+                                                <span className="text-[10px] font-bold text-blue-400">{Math.round(progress)}%</span>
                                             </div>
-                                          </div>
-                                          <span className="mt-3 text-xs font-bold text-blue-100 bg-black/60 px-3 py-1.5 rounded-full backdrop-blur-sm border border-blue-500/30 animate-pulse">Memproses...</span>
-                                     </div>
-                                 )}
-
-                                 {/* Compare Hover (Success only) */}
-                                 {item.status === 'completed' && item.result && (
-                                    <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity z-20 cursor-crosshair">
-                                       <img src={item.preview} alt="Asli" className="w-full h-full object-cover" />
-                                       <div className="absolute bottom-2 left-2 bg-black/80 text-white text-[10px] font-bold px-2 py-1 rounded backdrop-blur-md border border-white/20 uppercase tracking-wider shadow-lg flex items-center gap-1"><Eye size={10}/> Asli</div>
+                                        )}
+                                        {item.status === 'completed' && (
+                                            <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <button 
+                                                    onClick={() => {
+                                                        const link = document.createElement('a');
+                                                        link.href = item.result!;
+                                                        link.download = `result-${item.file.name}`;
+                                                        link.click();
+                                                    }}
+                                                    className="bg-black/60 p-1.5 rounded-lg text-white hover:bg-black"
+                                                >
+                                                    <Download size={14} />
+                                                </button>
+                                            </div>
+                                        )}
+                                        {item.status === 'completed' && item.extractedText && (
+                                            <div className="absolute bottom-2 right-2 bg-yellow-500 text-black text-[8px] font-black px-1.5 py-0.5 rounded shadow-lg uppercase">OCR Ready</div>
+                                        )}
                                     </div>
-                                 )}
-                                 
-                                 {/* Status Badges */}
-                                 {item.status === 'completed' && (
-                                      <div className="absolute top-2 right-2 bg-green-600 text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-lg flex items-center gap-1 z-10 border border-green-400/50">
-                                         <CheckCircle2 size={12} fill="currentColor" className="text-white" /> SELESAI
-                                      </div>
-                                 )}
-                                 {item.status === 'failed' && (
-                                      <div className="absolute top-2 right-2 bg-red-600 text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-lg flex items-center gap-1 z-10 border border-red-400/50">
-                                         <AlertOctagon size={12} fill="currentColor" className="text-white" /> GAGAL
-                                      </div>
-                                 )}
-                                 {item.status === 'pending' && (
-                                      <div className="absolute top-2 right-2 bg-gray-700/80 text-gray-300 text-[10px] font-bold px-2 py-1 rounded-full shadow-lg flex items-center gap-1 z-10 backdrop-blur-sm border border-gray-600">
-                                         <Clock size={12} /> ANTRE
-                                      </div>
-                                 )}
-                              </div>
-
-                              <div className="p-3 bg-gray-900 border-t border-gray-800/50">
-                                 <div className="flex justify-between items-start mb-2">
-                                    <span className="text-xs font-semibold text-gray-200 truncate max-w-[150px]" title={item.file.name}>{item.file.name}</span>
-                                    {item.status === 'processing' && (
-                                        <span className="text-[10px] font-bold text-blue-400 animate-pulse flex items-center gap-1">
-                                            <Loader2 size={10} className="animate-spin" /> {Math.round((item.currentStep / totalSteps) * 100)}%
-                                        </span>
-                                    )}
-                                    {item.status === 'completed' && <span className="text-[10px] font-bold text-green-500">100%</span>}
-                                 </div>
-                                 
-                                 {/* Progress Bar Container */}
-                                 <div className="relative h-2.5 bg-gray-800 rounded-full overflow-hidden border border-gray-700 shadow-inner">
-                                     <div 
-                                        className={`absolute top-0 left-0 h-full transition-all duration-700 ease-out rounded-full ${
-                                            item.status === 'completed' ? 'bg-gradient-to-r from-green-500 to-emerald-400 w-full' :
-                                            item.status === 'failed' ? 'bg-red-500 w-full' :
-                                            'bg-gradient-to-r from-blue-600 via-purple-500 to-blue-600 bg-[length:200%_100%] animate-gradient-x'
-                                        }`}
-                                        style={{ width: item.status === 'processing' ? `${(item.currentStep / totalSteps) * 100}%` : item.status === 'pending' ? '0%' : '100%' }}
-                                     ></div>
-                                 </div>
-                                 
-                                 {/* Dynamic Status Text */}
-                                 <div className="mt-2.5 flex items-center gap-2 text-[10px] text-gray-400 h-8">
-                                      {item.status === 'processing' && <Loader2 size={12} className="text-blue-400 animate-spin shrink-0" />}
-                                      {item.status === 'completed' && <CheckCircle2 size={12} className="text-green-400 shrink-0" />}
-                                      {item.status === 'failed' && <AlertOctagon size={12} className="text-red-400 shrink-0" />}
-                                      
-                                      <p className={`leading-tight line-clamp-2 ${
-                                          item.status === 'processing' ? 'text-blue-300' :
-                                          item.status === 'failed' ? 'text-red-300' : 
-                                          item.status === 'completed' ? 'text-green-300' : ''
-                                      }`}>
-                                        {currentActionText}
-                                      </p>
-                                 </div>
-
-                                 {item.error && (
-                                    <div className="mt-2 p-2 bg-red-950/30 border border-red-900/50 rounded flex gap-2 items-start animate-in fade-in slide-in-from-top-1">
-                                        <AlertOctagon size={14} className="text-red-400 shrink-0 mt-0.5" />
-                                        <p className="text-[10px] text-red-300 leading-tight" title={item.error}>{item.error}</p>
+                                    <div className="p-3">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-[10px] font-black text-gray-500 truncate w-3/4">{item.file.name}</span>
+                                            {!isBatchProcessing && <button onClick={() => setBatchItems(batchItems.filter(i => i.id !== item.id))} className="text-gray-700 hover:text-red-500"><X size={14}/></button>}
+                                        </div>
+                                        <div className="h-1 bg-gray-800 rounded-full overflow-hidden">
+                                            <div 
+                                                className={`h-full transition-all duration-500 ${
+                                                    item.status === 'completed' ? 'bg-green-500 w-full' : 
+                                                    item.status === 'failed' ? 'border-red-500 w-full' : 
+                                                    item.status === 'processing' ? 'bg-blue-600' : 'w-0'
+                                                }`}
+                                                style={{ width: item.status === 'processing' ? `${progress}%` : undefined }}
+                                            ></div>
+                                        </div>
+                                        {item.error && <p className="text-[8px] text-red-500 mt-1 font-bold uppercase">{item.error}</p>}
                                     </div>
-                                 )}
-                                 
-                                 {item.extractedText && (
-                                    <div className="mt-2 p-2 bg-black/40 rounded text-xs text-gray-300 max-h-20 overflow-y-auto custom-scrollbar border border-gray-700/50 group/ocr">
-                                      <strong className="block text-gray-500 mb-1 flex items-center justify-between">
-                                        <span className="flex items-center gap-1"><FileText size={10}/> Hasil OCR</span>
-                                        <button 
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                navigator.clipboard.writeText(item.extractedText!);
-                                            }}
-                                            className="text-[9px] text-blue-400 hover:text-white opacity-0 group-hover/ocr:opacity-100 transition-opacity"
-                                        >
-                                            Salin
-                                        </button>
-                                      </strong>
-                                      <p className="opacity-80 leading-relaxed font-mono text-[10px]">{item.extractedText.substring(0, 100)}{item.extractedText.length > 100 && '...'}</p>
-                                    </div>
-                                 )}
-                              </div>
-                           </div>
-                         )})}
-                      </div>
-                    )}
+                                </div>
+                                );
+                            })}
+                         </div>
+                       )}
+                    </div>
                  </div>
               </div>
 
@@ -1143,44 +892,20 @@ const ImageEditor: React.FC = () => {
         </div>
       </div>
       
-      {/* OCR Result Modal (Single Mode) */}
+      {/* OCR Result Modal */}
       {showOcrModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in">
-          <div className="bg-gray-800 rounded-xl border border-gray-700 shadow-2xl max-w-2xl w-full flex flex-col max-h-[80vh]">
-            <div className="flex justify-between items-center p-4 border-b border-gray-700 bg-gray-900/50 rounded-t-xl">
-               <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                 <FileText className="text-blue-400"/> Hasil Ekstraksi Teks (OCR)
-               </h3>
-               <button 
-                 onClick={() => setShowOcrModal(false)}
-                 className="p-1 hover:bg-gray-700 rounded-full text-gray-400 hover:text-white transition-colors"
-               >
-                 <X size={20}/>
-               </button>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-3xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col overflow-hidden">
+            <div className="p-6 border-b border-gray-800 flex justify-between items-center bg-black/20">
+               <h3 className="font-black text-white uppercase tracking-widest flex items-center gap-2"><FileText className="text-blue-400"/> Hasil OCR</h3>
+               <button onClick={() => setShowOcrModal(false)} className="text-gray-500 hover:text-white"><X size={24}/></button>
             </div>
-            <div className="p-4 flex-1 overflow-y-auto">
-               <textarea 
-                  readOnly 
-                  value={ocrResult} 
-                  className="w-full h-full min-h-[300px] bg-gray-900 border border-gray-700 rounded-lg p-4 text-gray-300 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none resize-none"
-               />
+            <div className="p-6 overflow-y-auto flex-1 bg-black/40">
+               <pre className="text-xs md:text-sm text-gray-300 font-mono whitespace-pre-wrap leading-relaxed">{ocrResult}</pre>
             </div>
-            <div className="p-4 border-t border-gray-700 bg-gray-900/30 rounded-b-xl flex justify-end gap-3">
-               <button 
-                 onClick={() => setShowOcrModal(false)}
-                 className="px-4 py-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg text-sm font-medium transition-colors"
-               >
-                 Tutup
-               </button>
-               <button 
-                 onClick={() => {
-                    navigator.clipboard.writeText(ocrResult);
-                    alert("Teks berhasil disalin!");
-                 }}
-                 className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
-               >
-                 <Copy size={16}/> Salin Teks
-               </button>
+            <div className="p-4 border-t border-gray-800 bg-black/20 flex justify-end gap-3">
+               <button onClick={() => {navigator.clipboard.writeText(ocrResult); alert("Disalin!");}} className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all"><Copy size={16}/> Salin</button>
+               <button onClick={() => setShowOcrModal(false)} className="bg-gray-800 hover:bg-gray-700 text-white px-5 py-2.5 rounded-xl text-xs font-black uppercase">Tutup</button>
             </div>
           </div>
         </div>

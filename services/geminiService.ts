@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { QuizData, QuizDistribution, QuestionType, ReferenceMaterial, QuizSection } from "../types";
 
@@ -40,8 +41,9 @@ export const generateMaterialSummary = async (
     return "No relevant materials found to summarize.";
   }
 
+  // Use gemini-3-flash-preview for Basic Text Tasks (e.g., summarization)
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: "gemini-3-flash-preview",
     contents: [{ role: 'user', parts: parts }]
   });
 
@@ -176,8 +178,9 @@ export const generateQuiz = async (
     tools: [{ googleSearch: {} }] 
   };
 
+  // Use gemini-3-pro-preview for Complex Text Tasks (e.g., quiz generation with search grounding)
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: "gemini-3-pro-preview",
     contents: [{ role: 'user', parts: parts }],
     config: config
   });
@@ -219,8 +222,9 @@ export const generateQuiz = async (
 export const getTrendingQuizTopics = async (): Promise<string[]> => {
   const ai = getAI();
   try {
+    // Use gemini-3-flash-preview for Basic Text Tasks
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: `Identify 5 currently trending topics, news events, or popular culture themes from the last 7 days that would make good quiz subjects.
       Return ONLY a valid JSON array of strings. Example: ["Paris Olympics", "New iPhone Release", "Election 2024"].
       Do not include markdown code blocks.`,
@@ -258,7 +262,7 @@ export const sendChatMessage = async (history: { role: string, parts: { text: st
   return result;
 };
 
-// FEATURE: Image Editing
+// FEATURE: Image Editing (Gemini 2.5 Flash Image)
 export const editImageWithPrompt = async (base64Image: string, prompt: string, mimeType: string = 'image/png'): Promise<string> => {
   const ai = getAI();
   const response = await ai.models.generateContent({
@@ -284,11 +288,35 @@ export const editImageWithPrompt = async (base64Image: string, prompt: string, m
   throw new Error("No image returned from model");
 };
 
+// FEATURE: Image Generation (Gemini 3 Pro Image)
+export const generateImage = async (prompt: string, config: { aspectRatio: "1:1" | "3:4" | "4:3" | "9:16" | "16:9", imageSize: "1K" | "2K" | "4K" }): Promise<string> => {
+  const ai = getAI();
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-pro-image-preview',
+    contents: {
+      parts: [{ text: prompt }]
+    },
+    config: {
+      imageConfig: config
+    }
+  });
+
+  for (const candidate of response.candidates || []) {
+    for (const part of candidate.content.parts || []) {
+      if (part.inlineData) {
+        return part.inlineData.data;
+      }
+    }
+  }
+  throw new Error("No image generated");
+};
+
 // FEATURE: OCR - Extract Text from Image
 export const extractTextFromImage = async (base64Image: string, mimeType: string = 'image/png'): Promise<string> => {
   const ai = getAI();
+  // Use gemini-3-flash-preview for text extraction tasks
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3-flash-preview',
     contents: {
       parts: [
         {
@@ -311,6 +339,7 @@ export const generateVeoVideo = async (
   imageBytes: string | null, 
   aspectRatio: '16:9' | '9:16' = '16:9'
 ): Promise<string> => {
+  // Use a new instance to ensure it uses the latest API key from the user selection dialog
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const config: any = {
@@ -340,7 +369,7 @@ export const generateVeoVideo = async (
   }
 
   while (!operation.done) {
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await new Promise(resolve => setTimeout(resolve, 10000));
     operation = await ai.operations.getVideosOperation({ operation: operation });
   }
 

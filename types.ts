@@ -23,6 +23,7 @@ export interface QuizQuestion {
   options?: string[]; // Only for Multiple Choice
   correctAnswer: string;
   explanation: string;
+  image?: string; // Base64 encoded image
 }
 
 export interface QuizDistribution {
@@ -41,7 +42,7 @@ export interface QuizData {
   subject: string;
   grade: string;
   topic: string;
-  sections: QuizSection[]; // Changed from flat questions to sections
+  sections: QuizSection[]; 
   remedial: QuizSection[];
   enrichment: QuizSection[];
   kkm?: number;
@@ -51,14 +52,13 @@ export interface ReferenceMaterial {
   id: string;
   fileName: string;
   content: string | any;
-  subject: string; // Mata Pelajaran
-  grade: string;   // Kelas
+  subject: string; 
+  grade: string;   
   uploadDate: number;
   category?: string;
   type?: string;
 }
 
-// Types for window.aistudio
 declare global {
   interface AIStudio {
     hasSelectedApiKey: () => Promise<boolean>;
