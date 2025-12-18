@@ -8,7 +8,7 @@ import {
   Folder, Check, Printer, User, UserCog, Layers, MessageSquarePlus, 
   FileSpreadsheet, FileImage, File, Archive, XCircle,
   Sparkles, ChevronDown, ChevronUp, RefreshCw, Eye, X, Settings2, Layout, Copy, CheckSquare, Square,
-  Bot, Tag, FileDown, CheckCircle2, AlertCircle, ClipboardList
+  Bot, Tag, FileDown, CheckCircle2, AlertCircle
 } from 'lucide-react';
 
 // Declaration for html2canvas
@@ -119,7 +119,7 @@ const QuizGenerator: React.FC = () => {
     showHeader: true,
     showName: true,
     showRubric: true,
-    fontSize: 'text-sm', 
+    fontSize: 'text-sm', // text-xs, text-sm, text-base
     compactMode: false
   });
   
@@ -167,7 +167,9 @@ const QuizGenerator: React.FC = () => {
             m.grade.toLowerCase() === grade.toLowerCase().trim()
         );
         setMatchedMaterials(matches);
+        // Reset selections when list changes
         setSelectedMaterialIds([]);
+        // Clear summary
         setMaterialSummary('');
         setShowSummary(false);
     } else {
@@ -197,6 +199,7 @@ const QuizGenerator: React.FC = () => {
     return groups;
   }, [materials]);
 
+  // --- Handlers for Subject Selection ---
   const handleMainSubjectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
     if (val === 'LAINNYA') {
@@ -207,6 +210,8 @@ const QuizGenerator: React.FC = () => {
       setSubject(val);
     }
   };
+
+  // --- Material Management Functions ---
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -244,15 +249,11 @@ const QuizGenerator: React.FC = () => {
     });
   };
 
-  // Fix: Spread types may only be created from object types.
-  // Using a type assertion to inform TypeScript that copy[index] is a spreadable object.
-  const updateStagingFile = (index: number, field: string, value: string) => {
+  const updateStagingFile = (index: number, field: any, value: string) => {
     setStagingFiles(prev => {
       const copy = [...prev];
-      const currentItem = copy[index];
-      if (currentItem) {
-        copy[index] = { ...currentItem, [field]: value } as Omit<ReferenceMaterial, 'id' | 'uploadDate'>;
-      }
+      // @ts-ignore
+      copy[index] = { ...copy[index], [field]: value };
       return copy;
     });
   };
@@ -284,6 +285,8 @@ const QuizGenerator: React.FC = () => {
     }
   };
 
+  // --- Quiz Generation Logic ---
+
   const handleGenerateSummary = async () => {
     const targets = selectedMaterialIds.length > 0 
         ? matchedMaterials.filter(m => selectedMaterialIds.includes(m.id))
@@ -314,6 +317,8 @@ const QuizGenerator: React.FC = () => {
       return;
     }
 
+    // Determine selected materials based on user choice
+    // If IDs selected, use those. If not, filtered by AI logic implicitly or default to deep research
     const finalMaterials = materials.filter(m => selectedMaterialIds.includes(m.id));
 
     setLoading(true);
@@ -323,11 +328,13 @@ const QuizGenerator: React.FC = () => {
     setViewMode('student');
 
     try {
+      // Build Section Configs
       const sectionConfigs = selectedTypes.map(type => ({
         type,
         distribution: configPerType[type]
       }));
 
+      // Filter Remedial/Enrichment Counts to valid types
       const cleanRemedial = Object.fromEntries(
          Object.entries(remedialCounts).filter(([_, count]) => (count as number) > 0)
       );
@@ -350,6 +357,7 @@ const QuizGenerator: React.FC = () => {
       setQuizData(quiz);
       setGroundingSources(groundingMetadata?.groundingChunks || []);
 
+      // Save generated quiz
        const newSavedQuiz: ReferenceMaterial = {
         id: Date.now().toString(),
         type: 'QUIZ',
@@ -381,6 +389,7 @@ const QuizGenerator: React.FC = () => {
 
     setExportingPdf(true);
     
+    // Slight delay to ensure UI updates before heavy processing
     setTimeout(async () => {
         try {
             const elementId = type === 'student' ? 'pdf-student-view' : 'pdf-teacher-view';
@@ -392,14 +401,14 @@ const QuizGenerator: React.FC = () => {
                 return;
             }
 
-            const pdfWidth = 210;
-            const pdfHeight = 297;
+            const pdfWidth = 210; // A4 width in mm
+            const pdfHeight = 297; // A4 height in mm
 
             const canvas = await html2canvas(element, {
-                scale: 2,
+                scale: 2, // Improve quality
                 useCORS: true,
                 logging: false,
-                windowWidth: pdfWidth * 3.7795275591,
+                windowWidth: pdfWidth * 3.7795275591, // Approximate pixel width for A4
                 x: 0,
                 y: 0
             });
@@ -414,9 +423,11 @@ const QuizGenerator: React.FC = () => {
             let heightLeft = imgHeight;
             let position = 0;
             
+            // First page
             doc.addImage(imgData, 'JPEG', 0, position, pdfWidth, imgHeight);
             heightLeft -= pdfHeight;
             
+            // Subsequent pages
             while (heightLeft > 0) {
                 position -= pdfHeight;
                 doc.addPage();
@@ -436,12 +447,18 @@ const QuizGenerator: React.FC = () => {
     }, 100);
   };
 
+  // --- Rounding Logic ---
+  // "JIKA ANGKA DIBELAKANG KOMA KURANG DARI 5, MAKA NILAI DITULIS ANGKA DEPAN SAJA"
+  // "JIKA ANGKA DINELAKANG KOMA MERUPAKAN NILAI LEBIH DARI (atau sama dengan) 5, MAKA DITULIS 8" (contoh: 7.5 -> 8)
   const calculateRoundedScore = (maxScore: number, questionCount: number): number => {
      if (questionCount === 0) return 0;
      const raw = maxScore / questionCount;
+     // Math.round performs standard rounding: < 0.5 down, >= 0.5 up.
      return Math.round(raw);
   };
 
+  // --- Render Helpers ---
+  
   const getLabelForType = (t: QuestionType) => {
       if (t === 'MULTIPLE_CHOICE') return 'Pilihan Ganda';
       if (t === 'SHORT_ANSWER') return 'Isian Singkat';
@@ -451,43 +468,46 @@ const QuizGenerator: React.FC = () => {
 
   const renderInstruction = (type: QuestionType) => {
     switch (type) {
-      case 'MULTIPLE_CHOICE': return "Berilah tanda silang (X) pada huruf A, B, C, atau D pada jawaban yang benar!";
-      case 'SHORT_ANSWER': return "Isilah titik-titik di bawah ini dengan jawaban yang benar dan tepat!";
-      case 'ESSAY': return "Jawablah pertanyaan-pertanyaan berikut dengan uraian yang jelas dan benar!";
+      case 'MULTIPLE_CHOICE': return "Pilihlah salah satu jawaban yang dianggap paling benar dan tepat!";
+      case 'SHORT_ANSWER': return "Isilah soal berikut dengan jawaban yang benar dan tepat!";
+      case 'ESSAY': return "Jawablah pertanyaan berikut dengan uraian yang jelas dan tepat!";
       default: return "Kerjakan soal berikut dengan teliti.";
     }
   };
 
   const renderSectionContent = (questions: QuizQuestion[], showAnswers: boolean, settings: typeof printSettings) => {
-    const spacingClass = settings.compactMode ? 'space-y-4' : 'space-y-7';
+    const spacingClass = settings.compactMode ? 'space-y-3' : 'space-y-6';
+    const itemClass = settings.compactMode ? 'mb-1' : 'mb-2';
     
     return (
       <div className={spacingClass}>
         {questions.map((q, idx) => (
           <div key={idx} className="break-inside-avoid">
-            <div className="flex gap-3">
-              <span className="font-bold min-w-[24px] text-right">{idx + 1}.</span>
+            <div className="flex gap-2">
+              <span className="font-bold">{idx + 1}.</span>
               <div className="flex-1">
-                <div className="mb-3 text-justify leading-relaxed">
+                <div className={`${itemClass} text-justify`}>
                     <ReactMarkdown>{q.question}</ReactMarkdown>
                 </div>
                 {q.type === 'MULTIPLE_CHOICE' && q.options && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-12 gap-y-2 ml-1 mt-2">
+                  <div className={`grid grid-cols-1 gap-1 ml-2`}>
                     {q.options.map((opt, i) => (
-                       <div key={i} className="flex gap-3 items-start">
-                          <span className="font-bold">{String.fromCharCode(65 + i)}.</span>
-                          <span className="flex-1">{opt}</span>
+                       <div key={i} className="flex gap-2 items-start">
+                          <div className="w-5 h-5 border border-black rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5 print:border-black">
+                            {String.fromCharCode(65 + i)}
+                          </div>
+                          <span>{opt}</span>
                        </div>
                     ))}
                   </div>
                 )}
-                {q.type !== 'MULTIPLE_CHOICE' && !showAnswers && (
-                  <div className={`mt-3 border-b-2 border-black border-dotted w-full opacity-40 ${settings.compactMode ? 'h-6' : 'h-24'}`}></div>
+                {q.type !== 'MULTIPLE_CHOICE' && (
+                  <div className={`mt-2 border-b border-black border-dashed w-full opacity-50 ${settings.compactMode ? 'h-4' : 'h-16'}`}></div>
                 )}
                 {showAnswers && (
-                   <div className="mt-4 text-[13px] bg-gray-50 border border-gray-300 p-4 rounded print:bg-transparent print:border-black print:border-dotted">
-                      <p><strong>Kunci:</strong> <span className="font-bold uppercase">{q.correctAnswer}</span></p>
-                      <p className="mt-2 text-xs text-gray-600 print:text-black italic"><strong>Penjelasan:</strong> {q.explanation}</p>
+                   <div className="mt-2 text-sm text-blue-800 bg-blue-50 p-2 rounded border border-blue-200 print:bg-transparent print:text-black print:border-black print:text-xs">
+                      <strong>Kunci:</strong> {q.correctAnswer}<br/>
+                      <strong>Pembahasan:</strong> {q.explanation}
                    </div>
                 )}
               </div>
@@ -498,103 +518,40 @@ const QuizGenerator: React.FC = () => {
     );
   };
 
-  const renderScoreTable = (section: QuizSection) => {
+  const renderScoreTable = (section: QuizSection, settings: typeof printSettings) => {
+    // 100 max per section
     const scorePerItem = calculateRoundedScore(100, section.questions.length);
     const totalScore = scorePerItem * section.questions.length;
 
     return (
-      <div className="mt-8 break-inside-avoid">
-        <h5 className="font-bold text-[13px] mb-3 uppercase border-b-2 border-black inline-block pb-1">
-            Rubrik & Kunci: {getLabelForType(section.type)}
+      <div className="mt-6 break-inside-avoid">
+        <h5 className="font-bold text-sm mb-2 uppercase border-b border-gray-400 inline-block">
+            Tabel Skor: {getLabelForType(section.type)}
         </h5>
-        <table className="w-full border-collapse border-2 border-black text-[11px]">
+        <table className="w-full border-collapse border border-black text-xs">
           <thead>
-            <tr className="bg-gray-200">
-               <th className="border-2 border-black p-2 w-12 text-center">No</th>
-               <th className="border-2 border-black p-2 text-left">Kunci Jawaban / Kriteria Penilaian</th>
-               <th className="border-2 border-black p-2 w-24 text-center">Skor Maks</th>
+            <tr className="bg-gray-200 print:bg-gray-100">
+               <th className="border border-black p-1 w-10 text-center">No</th>
+               <th className="border border-black p-1">Jawaban Kunci / Poin</th>
+               <th className="border border-black p-1 w-20 text-center">Skor</th>
             </tr>
           </thead>
           <tbody>
             {section.questions.map((q, i) => (
               <tr key={i}>
-                <td className="border-2 border-black p-2 text-center font-bold">{i+1}</td>
-                <td className="border-2 border-black p-2">
-                   <div className="font-medium">{q.correctAnswer}</div>
+                <td className="border border-black p-1 text-center">{i+1}</td>
+                <td className="border border-black p-1">
+                   <div className="font-mono font-bold">{q.correctAnswer}</div>
                 </td>
-                <td className="border-2 border-black p-2 text-center font-bold">{scorePerItem}</td>
+                <td className="border border-black p-1 text-center font-bold">{scorePerItem}</td>
               </tr>
             ))}
-            <tr className="font-bold bg-gray-100">
-              <td colSpan={2} className="border-2 border-black p-2 text-right uppercase">Total Nilai Maksimal</td>
-              <td className="border-2 border-black p-2 text-center text-[14px]">{totalScore}</td>
+            <tr className="font-bold bg-gray-100 print:bg-gray-100">
+              <td colSpan={2} className="border border-black p-1 text-right">TOTAL NILAI MAKSIMAL (Pembulatan)</td>
+              <td className="border border-black p-1 text-center">{totalScore}</td>
             </tr>
           </tbody>
         </table>
-      </div>
-    );
-  };
-
-  const renderFollowUpSection = (quiz: QuizData) => {
-    return (
-      <div className="mt-16 pt-16 border-t-4 border-double border-black print:break-before-page break-inside-avoid">
-         <div className="text-center mb-10">
-            <h2 className="font-black text-[20px] uppercase">VII. ANALISIS DAN TINDAK LANJUT HASIL BELAJAR</h2>
-            <p className="text-[14px] font-bold mt-1">KRITERIA KETUNTASAN MINIMAL (KKM): {quiz.kkm || 75}</p>
-         </div>
-
-         <div className="space-y-8">
-            <div className="space-y-4">
-              <p className="text-[13px] leading-relaxed">
-                 Berdasarkan hasil analisis penilaian harian/semester, rencana tindak lanjut yang akan dilaksanakan adalah:
-              </p>
-              
-              <table className="w-full border-collapse border-2 border-black text-[12px]">
-                 <thead>
-                    <tr className="bg-gray-100">
-                       <th className="border-2 border-black p-3 w-[45%] text-left">Program Tindak Lanjut</th>
-                       <th className="border-2 border-black p-3 w-[15%] text-center">Jumlah Siswa</th>
-                       <th className="border-2 border-black p-3 text-left">Keterangan</th>
-                    </tr>
-                 </thead>
-                 <tbody>
-                    <tr className="h-12">
-                       <td className="border-2 border-black p-3 font-bold">1. Program Perbaikan (Remedial)</td>
-                       <td className="border-2 border-black p-3"></td>
-                       <td className="border-2 border-black p-3 italic text-gray-500 font-medium">Bagi siswa dengan Nilai < {quiz.kkm || 75}</td>
-                    </tr>
-                    <tr className="h-12">
-                       <td className="border-2 border-black p-3 font-bold">2. Program Pengayaan (Enrichment)</td>
-                       <td className="border-2 border-black p-3"></td>
-                       <td className="border-2 border-black p-3 italic text-gray-500 font-medium">Bagi siswa dengan Nilai ≥ {quiz.kkm || 75}</td>
-                    </tr>
-                 </tbody>
-              </table>
-            </div>
-
-            <div className="mt-20 grid grid-cols-2 gap-24">
-               <div className="text-center space-y-20">
-                  <div>
-                    <p className="text-[13px]">Mengetahui,</p>
-                    <p className="text-[13px] font-bold">Kepala Sekolah</p>
-                  </div>
-                  <div>
-                    <p className="font-bold underline text-[13px]">(..........................................................)</p>
-                    <p className="text-[11px]">NIP. ......................................................</p>
-                  </div>
-               </div>
-               <div className="text-center space-y-20">
-                  <div>
-                    <p className="text-[13px]">[Kabupaten/Kota], ................................ 202...</p>
-                    <p className="text-[13px] font-bold">Guru Mata Pelajaran,</p>
-                  </div>
-                  <div>
-                    <p className="font-bold underline text-[13px]">(..........................................................)</p>
-                    <p className="text-[11px]">NIP. ......................................................</p>
-                  </div>
-               </div>
-            </div>
-         </div>
       </div>
     );
   };
@@ -606,162 +563,144 @@ const QuizGenerator: React.FC = () => {
     return (
       <div 
         id={id} 
-        className={`bg-white text-black mx-auto shadow-2xl print:shadow-none p-[1.5cm] max-w-[210mm] min-h-[297mm] print:w-[210mm] print:max-w-[210mm] print:m-0 print:p-[1.5cm] overflow-hidden ${currentSettings.fontSize} font-serif leading-normal`}
+        className={`bg-white text-black mx-auto shadow-2xl print:shadow-none p-[1cm] max-w-[210mm] min-h-[297mm] print:w-[210mm] print:max-w-[210mm] print:m-0 print:p-[1cm] overflow-hidden ${currentSettings.fontSize}`}
       >
           {/* --- SCHOOL HEADER (KOP) --- */}
           {currentSettings.showHeader && (
-            <div className="text-center border-b-[4px] border-double border-black pb-4 mb-8">
-              <h2 className="text-[18px] font-bold tracking-[0.1em] uppercase leading-tight">PEMERINTAH DAERAH PROVINSI [....................]</h2>
-              <h2 className="text-[18px] font-bold tracking-[0.1em] uppercase leading-tight">DINAS PENDIDIKAN DAN KEBUDAYAAN</h2>
-              <h1 className="text-[22px] font-black tracking-[0.1em] uppercase mt-2 leading-tight">SATUAN PENDIDIKAN [NAMA SEKOLAH ANDA]</h1>
-              <p className="text-[12px] font-sans italic mt-1 font-medium">Alamat: [Isi Alamat Sekolah Lengkap] - Kode Pos: [.....] - Telp: (021) 123456</p>
+            <div className="text-center border-b-4 border-double border-black pb-2 mb-4">
+              <h2 className="text-lg font-bold tracking-wide">PEMERINTAH KABUPATEN [KOTA]</h2>
+              <h2 className="text-lg font-bold tracking-wide">DINAS PENDIDIKAN DAN KEBUDAYAAN</h2>
+              <h1 className="text-2xl font-black tracking-wider">SEKOLAH MENENGAH PERTAMA [NAMA SEKOLAH]</h1>
+              <p className="text-sm italic">Jalan Pendidikan No. 1 Telp. (021) 123456</p>
             </div>
           )}
 
           {/* --- QUIZ DETAILS HEADER --- */}
-          <div className="mb-8">
-              <div className="text-center mb-8">
-                <h1 className="text-[20px] font-black uppercase underline underline-offset-4 decoration-2">
-                  NASKAH SOAL PENILAIAN AKHIR SEMESTER
-                </h1>
-                <p className="font-bold text-[14px] mt-1 uppercase tracking-wider">TAHUN PELAJARAN 2024 / 2025</p>
-              </div>
+          <div className="mb-6">
+              <h1 className="text-xl font-bold uppercase text-center mb-4 border-b-2 border-black pb-2 inline-block w-full">
+                LEMBAR SOAL UJIAN
+              </h1>
               
-              <div className="border-2 border-black p-5">
-                <table className="w-full text-[13px] font-bold">
+              <div className="flex justify-between items-start text-sm font-semibold">
+                 <table className="w-full">
                     <tbody>
-                        <tr>
-                            <td className="w-[30%] py-1">Mata Pelajaran</td>
-                            <td className="w-[35%] py-1">: {quizData.subject.toUpperCase()}</td>
-                            <td className="w-[15%] py-1 pl-4">Hari/Tgl</td>
-                            <td className="w-[20%] py-1">: ........................</td>
-                        </tr>
-                        <tr>
-                            <td className="py-1">Kelas / Semester</td>
-                            <td className="py-1">: {quizData.grade} / GANJIL</td>
-                            <td className="py-1 pl-4">Waktu</td>
-                            <td className="py-1">: 90 Menit</td>
-                        </tr>
-                        <tr>
-                            <td className="py-1 align-top">Pokok Bahasan</td>
-                            <td className="py-1 align-top" colSpan={3}>: {quizData.topic.toUpperCase() || "-"}</td>
-                        </tr>
+                       <tr>
+                          <td className="w-32 py-1">MATA PELAJARAN</td>
+                          <td className="py-1">: {quizData.subject.toUpperCase()}</td>
+                          <td className="w-20 py-1 pl-4">WAKTU</td>
+                          <td className="py-1">: 90 MENIT</td>
+                       </tr>
+                       <tr>
+                          <td className="py-1">KELAS</td>
+                          <td className="py-1">: {quizData.grade}</td>
+                          <td className="py-1 pl-4">HARI/TGL</td>
+                          <td className="py-1">: ............................</td>
+                       </tr>
+                       <tr>
+                          <td className="py-1">TOPIK</td>
+                          <td className="py-1" colSpan={3}>: {quizData.topic.toUpperCase() || "-"}</td>
+                       </tr>
                     </tbody>
-                </table>
+                 </table>
               </div>
 
               {currentSettings.showName && (
-                 <div className="mt-5 grid grid-cols-12 gap-4">
-                    <div className="col-span-8 border-2 border-black p-3 flex items-center gap-3">
-                       <span className="font-bold text-[13px] whitespace-nowrap">NAMA :</span>
-                       <div className="flex-1 border-b-2 border-black border-dotted h-5"></div>
-                    </div>
-                    <div className="col-span-4 border-2 border-black p-3 flex items-center gap-3">
-                       <span className="font-bold text-[13px] whitespace-nowrap">NO. PESERTA :</span>
-                       <div className="flex-1 border-b-2 border-black border-dotted h-5"></div>
-                    </div>
+                 <div className="mt-4 border border-black p-2 rounded-sm flex items-center">
+                    <span className="font-bold w-24">NAMA SISWA :</span>
+                    <div className="flex-1 border-b border-black border-dashed h-4"></div>
                  </div>
               )}
           </div>
 
           {/* --- MAIN QUIZ CONTENT --- */}
-          <div className="space-y-12">
+          <div className="space-y-8">
               {quizData.sections.map((section, idx) => (
-                  <div key={idx} className="quiz-section-block">
-                      <div className="flex items-center gap-4 mb-4 border-b-2 border-black/20 pb-2">
-                        <span className="bg-black text-white px-3 py-1 font-bold text-[14px] leading-none">{String.fromCharCode(65 + idx)}</span>
-                        <h3 className="font-black text-[16px] uppercase tracking-wider">
-                           {getLabelForType(section.type)}
-                        </h3>
-                      </div>
-                      <p className="italic mb-8 font-bold text-[13px] text-gray-800 leading-relaxed bg-gray-100 p-3 border-l-4 border-black/30 print:bg-transparent">
+                  <div key={idx} className="break-inside-avoid">
+                      <h3 className="font-bold text-base mb-2 uppercase bg-gray-100 p-1 print:bg-transparent print:p-0">
+                          {String.fromCharCode(65 + idx)}. {getLabelForType(section.type)}
+                      </h3>
+                      <p className="italic mb-4 font-medium text-sm">
                           {renderInstruction(section.type)}
                       </p>
-                      <div className="questions-container">
-                        {renderSectionContent(section.questions, effectiveMode === 'teacher', currentSettings)}
-                      </div>
+                      {renderSectionContent(section.questions, effectiveMode === 'teacher', currentSettings)}
                   </div>
               ))}
           </div>
 
-          {/* --- TEACHER ONLY APPENDICES --- */}
+          {/* --- TEACHER SCORE TABLE & EXTRAS --- */}
           {effectiveMode === 'teacher' && (
-            <div className="teacher-appendices">
-              {/* Answer Key Section */}
-              <div className="mt-16 pt-16 border-t-4 border-double border-black print:break-before-page">
-                  <div className="text-center mb-10">
-                    <h2 className="font-black text-[22px] uppercase">LAMPIRAN PEGANGAN GURU</h2>
-                    <p className="text-[12px] font-bold bg-black text-white inline-block px-6 py-1 mt-2 print:bg-transparent print:text-black print:border-2 print:border-black">KUNCI JAWABAN & PEDOMAN PENSKORAN</p>
+            <>
+              {/* Teacher Key & Rubric (New Page) */}
+              <div className="mt-8 pt-8 print:break-before-page">
+                  <div className="border-b-2 border-black pb-2 mb-4 text-center">
+                    <h2 className="font-bold text-xl uppercase">LAMPIRAN GURU: KUNCI JAWABAN & PENSKORAN</h2>
+                    <p className="text-sm">Dokumen Rahasia - Pegangan Guru</p>
                   </div>
                   
-                  <div className="space-y-12">
-                    {quizData.sections.map((section, idx) => (
-                        <div key={idx}>
-                            {renderScoreTable(section)}
-                        </div>
-                    ))}
-                  </div>
+                  {quizData.sections.map((section, idx) => (
+                      <div key={idx} className="mb-8">
+                          {renderScoreTable(section, currentSettings)}
+                      </div>
+                  ))}
               </div>
 
-              {/* REMEDIAL SECTION */}
+              {/* REMEDIAL SECTION (New Page) */}
               {includeRemedial && quizData.remedial.length > 0 && (
-                <div className="mt-16 pt-16 border-t-4 border-double border-black print:break-before-page">
-                  <div className="text-center border-b-2 border-black pb-5 mb-10">
-                    <h1 className="text-[20px] font-black uppercase">PROGRAM PERBAIKAN (REMEDIAL)</h1>
-                    <p className="text-[12px] font-bold italic mt-2 text-red-700 print:text-black">Diberikan kepada peserta didik yang belum tuntas KKM ({quizData.kkm || 75})</p>
+                <div className="mt-8 pt-8 print:break-before-page">
+                  <div className="text-center border-b-4 border-double border-black pb-2 mb-6">
+                    <h1 className="text-xl font-bold uppercase">PROGRAM REMEDIAL</h1>
+                    <p className="text-sm font-semibold">UNTUK SISWA DENGAN NILAI DI BAWAH KKM ({quizData.kkm || 75})</p>
                   </div>
                   
-                  <div className="grid grid-cols-2 gap-6 mb-10 text-[13px] font-bold uppercase">
-                     <div className="border-2 border-black p-4">MAPEL: {quizData.subject}</div>
-                     <div className="border-2 border-black p-4">KELAS: {quizData.grade}</div>
+                  {/* Reuse Header for Remedial Page */}
+                  <div className="mb-6 text-sm font-medium border-b border-black pb-4">
+                     <p>Mata Pelajaran: {quizData.subject}</p>
+                     <p>Kelas: {quizData.grade}</p>
+                     <div className="mt-4 border border-black p-2 flex">
+                        <span className="w-24">Nama Siswa:</span>
+                        <span className="border-b border-dotted border-black flex-1"></span>
+                     </div>
                   </div>
 
-                  <div className="space-y-12">
-                    {quizData.remedial.map((section, idx) => (
-                        <div key={idx}>
-                            <h4 className="font-black text-[15px] underline mb-6 uppercase decoration-2 underline-offset-4">{getLabelForType(section.type)} (REMEDIAL)</h4>
-                            {renderSectionContent(section.questions, true, currentSettings)}
-                            {renderScoreTable(section)}
-                        </div>
-                    ))}
-                  </div>
+                  {quizData.remedial.map((section, idx) => (
+                      <div key={idx} className="mb-6 break-inside-avoid">
+                          <h4 className="font-bold underline mb-2 uppercase">{getLabelForType(section.type)}</h4>
+                          {renderSectionContent(section.questions, true, currentSettings)}
+                          {renderScoreTable(section, currentSettings)}
+                      </div>
+                  ))}
                 </div>
               )}
 
-              {/* ENRICHMENT SECTION */}
+              {/* ENRICHMENT SECTION (New Page) */}
               {includeEnrichment && quizData.enrichment.length > 0 && (
-                <div className="mt-16 pt-16 border-t-4 border-double border-black print:break-before-page">
-                  <div className="text-center border-b-2 border-black pb-5 mb-10">
-                    <h1 className="text-[20px] font-black uppercase">PROGRAM PENGAYAAN (ENRICHMENT)</h1>
-                    <p className="text-[12px] font-bold italic mt-2 text-green-700 print:text-black">Diberikan kepada peserta didik yang telah melampaui KKM ({quizData.kkm || 75})</p>
+                <div className="mt-8 pt-8 print:break-before-page">
+                  <div className="text-center border-b-4 border-double border-black pb-2 mb-6">
+                    <h1 className="text-xl font-bold uppercase">PROGRAM PENGAYAAN</h1>
+                    <p className="text-sm font-semibold">UNTUK SISWA DENGAN NILAI DI ATAS KKM ({quizData.kkm || 75})</p>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-6 mb-10 text-[13px] font-bold uppercase">
-                     <div className="border-2 border-black p-4">MAPEL: {quizData.subject}</div>
-                     <div className="border-2 border-black p-4">KELAS: {quizData.grade}</div>
+                   {/* Reuse Header for Enrichment Page */}
+                   <div className="mb-6 text-sm font-medium border-b border-black pb-4">
+                     <p>Mata Pelajaran: {quizData.subject}</p>
+                     <p>Kelas: {quizData.grade}</p>
+                     <div className="mt-4 border border-black p-2 flex">
+                        <span className="w-24">Nama Siswa:</span>
+                        <span className="border-b border-dotted border-black flex-1"></span>
+                     </div>
                   </div>
 
-                  <div className="space-y-12">
-                    {quizData.enrichment.map((section, idx) => (
-                        <div key={idx}>
-                            <h4 className="font-black text-[15px] underline mb-6 uppercase decoration-2 underline-offset-4">{getLabelForType(section.type)} (PENGAYAAN)</h4>
-                            {renderSectionContent(section.questions, true, currentSettings)}
-                            {renderScoreTable(section)}
-                        </div>
-                    ))}
-                  </div>
+                  {quizData.enrichment.map((section, idx) => (
+                      <div key={idx} className="mb-6 break-inside-avoid">
+                          <h4 className="font-bold underline mb-2 uppercase">{getLabelForType(section.type)}</h4>
+                          {renderSectionContent(section.questions, true, currentSettings)}
+                          {renderScoreTable(section, currentSettings)}
+                      </div>
+                  ))}
                 </div>
               )}
-
-              {/* NEW: FOLLOW-UP (Tindak Lanjut) SECTION */}
-              {renderFollowUpSection(quizData)}
-            </div>
+            </>
           )}
-          
-          {/* Print Footer */}
-          <div className="mt-16 pt-6 border-t border-gray-200 text-center text-[10px] text-gray-400 print:hidden italic">
-             Omni-Studio | Sistem Penilaian Otomatis Berbasis Kecerdasan Buatan (AI)
-          </div>
       </div>
     );
   };
@@ -782,7 +721,7 @@ const QuizGenerator: React.FC = () => {
           Buat Soal (Quiz Generator)
         </h2>
         <p className="text-gray-400">
-          Buat soal berkualitas standar nasional dengan telaah materi AI yang mendalam.
+          Upload materi, instruksi AI otomatis, dan multi-format soal.
         </p>
       </div>
 
@@ -830,6 +769,7 @@ const QuizGenerator: React.FC = () => {
                            return (
                            <div key={idx} className={`bg-gray-700/50 p-4 rounded-xl border flex flex-col md:flex-row gap-4 items-start md:items-center transition-all duration-300 ${isReady ? 'border-green-500/30 shadow-[0_0_15px_-5px_rgba(34,197,94,0.3)]' : 'border-gray-600'}`}>
                               
+                              {/* Thumbnail Preview */}
                               <div className="flex-shrink-0 relative">
                                 {typeof file.content === 'string' && file.content.startsWith('data:image') ? (
                                     <img 
@@ -901,7 +841,7 @@ const QuizGenerator: React.FC = () => {
                </div>
             )}
 
-            {/* TAB: LIBRARY */}
+            {/* TAB: LIBRARY (Grouped View) */}
             {activeTab === 'library' && (
                <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
                   {materials.length === 0 ? (
@@ -910,6 +850,7 @@ const QuizGenerator: React.FC = () => {
                      <div className="space-y-6">
                         {Object.entries(groupedMaterials).sort().map(([subjectName, categories]) => (
                            <div key={subjectName} className="bg-gray-800/50 rounded-xl border border-gray-700 overflow-hidden">
+                              {/* Subject Header */}
                               <div className="p-4 bg-gray-800 border-b border-gray-700 flex items-center gap-2">
                                  <BookOpen className="text-blue-400" size={18} />
                                  <h3 className="font-bold text-lg text-white">{subjectName}</h3>
@@ -918,6 +859,7 @@ const QuizGenerator: React.FC = () => {
                                  </span>
                               </div>
 
+                              {/* Categories */}
                               <div className="p-4 space-y-6">
                                  {Object.entries(categories).sort().map(([categoryName, items]) => (
                                     <div key={categoryName}>
@@ -958,9 +900,10 @@ const QuizGenerator: React.FC = () => {
                </div>
             )}
 
-            {/* TAB: FORM */}
+            {/* TAB: FORM (Only show form content when active) */}
             {activeTab === 'form' && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in slide-in-from-bottom-4">
+                {/* Left: Basic Info */}
                 <div className="space-y-4">
                    <div className="space-y-2">
                       <label className="flex items-center gap-2 text-sm font-medium text-gray-300">
@@ -987,6 +930,7 @@ const QuizGenerator: React.FC = () => {
                    </div>
                 </div>
 
+                {/* Right: Topic & Instruction */}
                 <div className="space-y-4">
                    <div className="space-y-2 relative">
                       <label className="flex items-center gap-2 text-sm font-medium text-gray-300">
@@ -1003,6 +947,7 @@ const QuizGenerator: React.FC = () => {
                       </div>
                    </div>
                    
+                   {/* Custom Instruction Moved Here */}
                    <div className="space-y-2">
                       <label className="flex items-center gap-2 text-sm font-medium text-gray-300">
                          <MessageSquarePlus size={16} className="text-yellow-400"/> Perintah Pembuat Soal (Instruksi Khusus)
@@ -1018,6 +963,7 @@ const QuizGenerator: React.FC = () => {
               </div>
             )}
 
+            {/* AI Generate Pro / Material Table (Show if Form is active and materials exist) */}
             {activeTab === 'form' && matchedMaterials.length > 0 && (
                <div className="border border-gray-700 bg-gray-800/50 rounded-xl p-4 animate-in fade-in slide-in-from-top-2">
                   <div className="flex justify-between items-center mb-4">
@@ -1080,6 +1026,7 @@ const QuizGenerator: React.FC = () => {
                      )}
                   </div>
                   
+                  {/* AI Material Summary Section */}
                   <div className="mt-4 pt-4 border-t border-gray-700">
                       <div className="flex items-center justify-between">
                           <button
@@ -1126,12 +1073,14 @@ const QuizGenerator: React.FC = () => {
                </div>
             )}
 
+            {/* --- QUIZ CONFIGURATION (Show only on FORM tab) --- */}
             {activeTab === 'form' && (
             <div className="border-t border-gray-700 pt-6 space-y-6">
                 <div className="space-y-4">
                    <h4 className="font-bold text-lg text-white">Bentuk Soal & Tingkat Kesulitan</h4>
                    <p className="text-sm text-gray-400">Centang jenis soal yang ingin dibuat. Masing-masing bagian memiliki skor maksimal 100.</p>
                    
+                   {/* Checkbox Selectors */}
                    <div className="flex flex-wrap gap-6 p-4 bg-gray-900 rounded-xl border border-gray-700">
                       {(['MULTIPLE_CHOICE', 'SHORT_ANSWER', 'ESSAY'] as QuestionType[]).map(type => (
                          <label key={type} className="flex items-center gap-2 cursor-pointer group">
@@ -1154,6 +1103,7 @@ const QuizGenerator: React.FC = () => {
                       ))}
                    </div>
 
+                   {/* Dynamic Configuration Rows */}
                    {selectedTypes.map(type => (
                       <div key={type} className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center bg-gray-700/20 p-4 rounded-xl border border-gray-700/50">
                          <div className="md:col-span-3 font-bold text-blue-300 text-sm flex items-center gap-2">
@@ -1190,6 +1140,7 @@ const QuizGenerator: React.FC = () => {
                    ))}
                 </div>
 
+                {/* Remedial & Enrichment */}
                 <div className="bg-gray-700/30 p-4 rounded-xl border border-gray-600 space-y-6">
                    <div className="flex items-center justify-between border-b border-gray-600 pb-2">
                       <div className="flex items-center gap-2 text-sm font-bold text-gray-300">
@@ -1202,6 +1153,7 @@ const QuizGenerator: React.FC = () => {
                       </div>
                    </div>
 
+                   {/* Remedial Row */}
                    <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
                       <div className="md:col-span-3 flex items-center justify-between">
                          <span className="text-sm font-bold text-gray-400">REMEDIAL</span>
@@ -1231,6 +1183,7 @@ const QuizGenerator: React.FC = () => {
                       </div>
                    </div>
 
+                   {/* Enrichment Row */}
                    <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
                       <div className="md:col-span-3 flex items-center justify-between">
                          <span className="text-sm font-bold text-gray-400">PENGAYAAN</span>
@@ -1277,6 +1230,7 @@ const QuizGenerator: React.FC = () => {
       {/* --- A4 PRINTABLE QUIZ VIEW --- */}
       {quizData && (
         <div className="space-y-4">
+           {/* Control Bar (Hidden on Print) */}
            <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 flex flex-col gap-4 print:hidden">
               <div className="flex flex-wrap justify-between items-center gap-4">
                  <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-700">
@@ -1288,21 +1242,6 @@ const QuizGenerator: React.FC = () => {
                     </button>
                  </div>
                  <div className="flex flex-wrap gap-2">
-                    {viewMode === 'teacher' && (
-                        <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-900/20 border border-purple-500/30 rounded-lg">
-                            <span className="text-xs font-bold text-purple-300 flex items-center gap-1.5"><ClipboardList size={14}/> Set KKM:</span>
-                            <input 
-                            type="number" 
-                            value={quizData.kkm || 75} 
-                            onChange={(e) => {
-                                const val = parseInt(e.target.value) || 0;
-                                setQuizData(prev => prev ? { ...prev, kkm: val } : null);
-                            }}
-                            className="w-16 bg-gray-900 border border-purple-500/50 rounded text-xs px-2 py-1 text-white text-center font-bold focus:outline-none focus:ring-1 focus:ring-purple-400"
-                            />
-                        </div>
-                    )}
-
                     <button 
                         onClick={() => handleExportPDF('student')} 
                         disabled={exportingPdf}
@@ -1331,6 +1270,7 @@ const QuizGenerator: React.FC = () => {
                  </div>
               </div>
               
+              {/* Grounding Sources */}
               {groundingSources.length > 0 && (
                  <div className="w-full pt-3 mt-2 border-t border-gray-700">
                     <p className="text-xs font-bold text-gray-400 mb-2 flex items-center gap-1">
@@ -1347,16 +1287,15 @@ const QuizGenerator: React.FC = () => {
               )}
            </div>
 
-           {/* MAIN PREVIEW VIEW */}
-           <div className="overflow-x-auto flex justify-center bg-gray-900 py-8 print:p-0 print:bg-white">
-             {renderQuizPaper(undefined, { showHeader: true, showName: true, showRubric: true, fontSize: 'text-sm', compactMode: false })}
-           </div>
+           {/* MAIN DRAFT VIEW (Not for printing) */}
+           {renderQuizPaper(undefined, { showHeader: true, showName: true, showRubric: true, fontSize: 'text-sm', compactMode: false })}
 
-           {/* DEDICATED PRINT PREVIEW MODAL */}
+           {/* --- DEDICATED PRINT PREVIEW MODAL --- */}
            {showPrintModal && (
-              <div className="fixed inset-0 z-[60] bg-black/90 backdrop-blur-sm flex justify-center items-center print:bg-white print:block print:static">
+              <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex justify-center items-center print:bg-white print:block print:static">
                  <div className="w-full h-full flex flex-col md:flex-row overflow-hidden print:block print:h-auto">
                     
+                    {/* Left Sidebar: Controls (Hidden on Print) */}
                     <div className="w-full md:w-80 bg-gray-900 border-r border-gray-800 p-6 flex-shrink-0 flex flex-col gap-6 print:hidden overflow-y-auto max-h-[50vh] md:max-h-full md:h-full border-b md:border-b-0">
                        <div className="flex justify-between items-center border-b border-gray-800 pb-4">
                           <h3 className="text-xl font-bold text-white flex items-center gap-2"><Settings2 className="text-purple-400" /> Print Settings</h3>
@@ -1384,6 +1323,7 @@ const QuizGenerator: React.FC = () => {
                        </div>
                     </div>
 
+                    {/* Right: Scrollable Preview Area */}
                     <div className="flex-1 bg-gray-800/50 overflow-y-auto p-4 md:p-12 flex justify-center print:p-0 print:overflow-visible print:block min-h-[50vh]">
                         {renderQuizPaper('quiz-print-area', printSettings)}
                     </div>

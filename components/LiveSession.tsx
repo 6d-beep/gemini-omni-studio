@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { Mic, MicOff, Volume2, Activity, Power, XCircle } from 'lucide-react';
@@ -111,17 +110,22 @@ const LiveSession: React.FC = () => {
     // Get Mic Stream
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     
-    const sessionPromise = ai.live.connect({
+    const config = {
       model: 'gemini-2.5-flash-native-audio-preview-09-2025',
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
         },
-        systemInstruction: 'You are a helpful assistant.',
-        inputAudioTranscription: {}, 
-        outputAudioTranscription: {},
+        systemInstruction: { parts: [{ text: 'You are a helpful assistant.' }] },
+        inputAudioTranscription: { model: 'gemini-2.5-flash-native-audio-preview-09-2025' }, 
+        outputAudioTranscription: { model: 'gemini-2.5-flash-native-audio-preview-09-2025' },
       },
+    };
+
+    const sessionPromise = ai.live.connect({
+      model: config.model,
+      config: config.config,
       callbacks: {
         onopen: () => {
           console.log("Session Opened");

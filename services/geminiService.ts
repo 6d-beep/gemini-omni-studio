@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { QuizData, QuizDistribution, QuestionType, ReferenceMaterial, QuizSection } from "../types";
 
@@ -41,9 +40,8 @@ export const generateMaterialSummary = async (
     return "No relevant materials found to summarize.";
   }
 
-  // Use gemini-3-flash-preview for basic text tasks like summarization
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-2.5-flash",
     contents: [{ role: 'user', parts: parts }]
   });
 
@@ -178,9 +176,8 @@ export const generateQuiz = async (
     tools: [{ googleSearch: {} }] 
   };
 
-  // Use gemini-3-pro-preview for complex tasks like reasoning and curriculum-aligned quiz generation
   const response = await ai.models.generateContent({
-    model: "gemini-3-pro-preview",
+    model: "gemini-2.5-flash",
     contents: [{ role: 'user', parts: parts }],
     config: config
   });
@@ -222,9 +219,8 @@ export const generateQuiz = async (
 export const getTrendingQuizTopics = async (): Promise<string[]> => {
   const ai = getAI();
   try {
-    // Use gemini-3-flash-preview for general search-based tasks
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.5-flash",
       contents: `Identify 5 currently trending topics, news events, or popular culture themes from the last 7 days that would make good quiz subjects.
       Return ONLY a valid JSON array of strings. Example: ["Paris Olympics", "New iPhone Release", "Election 2024"].
       Do not include markdown code blocks.`,
@@ -291,9 +287,8 @@ export const editImageWithPrompt = async (base64Image: string, prompt: string, m
 // FEATURE: OCR - Extract Text from Image
 export const extractTextFromImage = async (base64Image: string, mimeType: string = 'image/png'): Promise<string> => {
   const ai = getAI();
-  // Use gemini-3-flash-preview for multimodal tasks like OCR
   const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: 'gemini-2.5-flash',
     contents: {
       parts: [
         {

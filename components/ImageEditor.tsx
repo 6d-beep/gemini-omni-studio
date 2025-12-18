@@ -107,7 +107,7 @@ const ImageEditor: React.FC = () => {
           currentStep,
           timestamp: Date.now()
         };
-        localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(saveState));
+        localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(stateToSave));
       } catch (e) {
         console.warn("LocalStorage full, attempting to save compact state...");
         try {
@@ -268,7 +268,7 @@ const ImageEditor: React.FC = () => {
   };
 
   const handleUndo = () => {
-    if (currentStep > 0) setCurrentStep(prev => prev + 1);
+    if (currentStep > 0) setCurrentStep(prev => prev - 1);
   };
 
   const handleRedo = () => {
@@ -334,8 +334,8 @@ const ImageEditor: React.FC = () => {
         const filename = index === 0 ? `original-${quality}.${ext}` : `edit_step_${index}-${quality}.${ext}`;
         zip.file(filename, base64Data, { base64: true });
       }));
-      // Fix: Ensure zipBlob is correctly typed as Blob by casting from the generic generateAsync promise.
-      const zipBlob = (await zip.generateAsync({ type: 'blob' })) as any;
+      // Explicit cast to Blob
+      const zipBlob = (await zip.generateAsync({ type: 'blob' })) as Blob;
       const url = URL.createObjectURL(zipBlob);
       const link = document.createElement('a');
       link.href = url;
@@ -392,8 +392,7 @@ const ImageEditor: React.FC = () => {
       alert("Tambahkan setidaknya satu langkah edit sebelum menyimpan.");
       return;
     }
-    // Fix: Explicitly use window.prompt because the state variable 'prompt' shadows the global function.
-    const name = window.prompt("Masukkan nama untuk preset ini:");
+    const name = prompt("Masukkan nama untuk preset ini:");
     if (name) {
       const existingIndex = presets.findIndex(p => p.name.toLowerCase() === name.toLowerCase());
       
@@ -516,8 +515,8 @@ const ImageEditor: React.FC = () => {
         }
       }));
 
-      // Fix: Ensure zipBlob is correctly typed as Blob by casting from the generic generateAsync promise.
-      const zipBlob = (await zip.generateAsync({ type: 'blob' })) as any;
+      // Explicit cast to Blob
+      const zipBlob = (await zip.generateAsync({ type: 'blob' })) as Blob;
       const url = URL.createObjectURL(zipBlob);
       const link = document.createElement('a');
       link.href = url;
